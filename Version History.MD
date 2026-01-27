@@ -56,13 +56,17 @@
 ---
 
 # Version 1.4
-- Implemented ``
-- Implemented ``
-- Implemented ``
-- Implemented ``
-- Implemented ``
-- Implemented ``
-- Implemented ``
+- Implemented `src/inference/pipeline.py` for e2e inference pipeline
+- Implemented `configs/inference.yaml` for inference config
+- Implemented `src/inference/video_processor.py` for video processing and visualization
+- Implemented `src/visualization/bbox_drawer.py` for creating bounding box drawing and visualization
+- Implemented `scripts/run_inference.py` for running inference of video
+- Implemented `tests/integration/test_inference_pipeline.py` to test inference pipeline
+- Implemented `scripts/test_pipeline_quick.py` for quick test of inference pipeline on single image
+
+---
+
+# Version 1.5
 - Implemented ``
 - Implemented ``
 - Implemented ``

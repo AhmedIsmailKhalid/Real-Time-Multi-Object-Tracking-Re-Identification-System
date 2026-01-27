@@ -1,6 +1,7 @@
 """
 Download pre-trained models.
 """
+
 import shutil
 from pathlib import Path
 
@@ -60,6 +61,7 @@ def download_resnet50_imagenet():
 
     # Use weights parameter instead of pretrained
     from torchvision.models import ResNet50_Weights
+
     model = models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
 
     torch.save(model.state_dict(), output_file)

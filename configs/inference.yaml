@@ -1,0 +1,26 @@
+device: "cuda"
+use_reid: false
+
+detection:
+  model_path: "models/detection/pretrained/yolov8s.pt"
+  conf_threshold: 0.5
+  iou_threshold: 0.45
+  target_classes: [0]
+
+tracking:
+  high_conf_thresh: 0.6
+  low_conf_thresh: 0.1
+  track_buffer: 30
+  match_thresh: 0.8
+
+reid:
+  model_path: "models/reid/final/resnet50_market_best.pth"
+  distance_threshold: 0.3
+  update_gallery: true
+
+visualization:
+  draw_boxes: true
+  draw_ids: true
+  draw_trails: false
+  thickness: 2
+  font_scale: 0.5
