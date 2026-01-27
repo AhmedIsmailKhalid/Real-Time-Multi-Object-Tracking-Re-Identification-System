@@ -1,0 +1,22 @@
+model:
+  name: "yolov8s"
+  pretrained_path: "models/detection/pretrained/yolov8s.pt"
+  checkpoint_path: "models/detection/checkpoints"
+  final_path: "models/detection/final"
+
+inference:
+  device: "cuda"
+  conf_threshold: 0.5
+  iou_threshold: 0.45
+  target_classes: [0]  # 0 = person class in COCO
+  image_size: 640
+
+training:
+  epochs: 30
+  batch_size: 16
+  learning_rate: 0.001
+  image_size: 640
+  device: "cuda"
+  num_workers: 4
+  patience: 10
+  save_period: 5

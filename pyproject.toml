@@ -1,0 +1,116 @@
+[tool.poetry]
+name = "mot-reid-system"
+version = "1.0.0"
+description = "Multi-Object Tracking with Person Re-Identification"
+authors = ["Your Name <your.email@example.com>"]
+readme = "README.md"
+packages = [{include = "src"}]
+
+[[tool.poetry.source]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+priority = "explicit"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+torch = {version = "2.7.1", source = "pytorch-cu128"}
+torchvision = {version = "0.22.1", source = "pytorch-cu128"}
+ultralytics = "8.0.200"
+opencv-python = "4.8.1.78"
+numpy = "^1.24"
+pandas = "^2.0"
+fastapi = "0.104.1"
+uvicorn = {extras = ["standard"], version = "^0.24"}
+python-multipart = "^0.0.6"
+mlflow = "2.8.0"
+dvc = "3.0.0"
+pyyaml = "^6.0"
+python-dotenv = "^1.0"
+tqdm = "^4.66"
+pillow = "^10.0"
+matplotlib = "^3.7"
+seaborn = "^0.12"
+scikit-learn = "^1.3"
+scipy = "^1.11"
+gdown = "^5.2.1"
+pathspec = "<1"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "7.4.0"
+pytest-cov = "^4.1"
+black = "^24.0.0"
+isort = "^5.13"
+ruff = "^0.1.0"
+mypy = "^1.5"
+ipython = "^8.15"
+jupyter = "^1.0"
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 100
+skip_gitignore = true
+known_first_party = ["src", "api", "tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = [
+    "E",
+    "W",
+    "F",
+    "I",
+    "B",
+    "C4",
+    "UP",
+]
+ignore = [
+    "E501",
+    "B008",
+    "C901",
+]
+
+[tool.ruff.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+strict_equality = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --cov=src --cov-report=html --cov-report=term-missing"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
