@@ -9,7 +9,9 @@
 - Implemented `scripts/download_market1501.py` to download market1501 dataset
 - Implemented `scripts/preprocess_mot17.py` to process and save the mot17 dataset
 - Implemented `scripts/preprocess_market1501.py` to process and save the market1501 dataset
+- **Notes : Completed Data Preprocessing**
 - **Version 1.0 zip file created**
+
 ---
 
 # Version 1.1
@@ -20,6 +22,20 @@
 - Implemented `scripts/download_pretrained_models.py` to download pretrained yolov8
 - Implemented `tests/unit/test_detection.py` unit tests for detection models
 - Implemented `tests/conftest.py` to for pytest configuration and fixtures
+- **Notes : Completed Detection Module**
+- **Version 1.1 zip file created**
+
+---
+
+# Version 1.2
+- Implemented `src/tracking/tracker_base.py` for base tracker interface
+- Implemented `src/tracking/kalman_filter.py` kalman filter for motion tracking
+- Implemented `src/tracking/matching.py`for matching logic using hungarian algorithm
+- Implemented `src/tracking/track.py` for track class to represent single object tracked
+- Implemented `src/tracking/bytetrack.py` for byte tracking algorithm
+- Implemented `configs/tracking.yaml` for tracking models configs
+- Implemented `tests/unit/test_tracking.py` for tracking unit tests
+- Implemented ``
 - Implemented ``
 - Implemented ``
 - Implemented ``

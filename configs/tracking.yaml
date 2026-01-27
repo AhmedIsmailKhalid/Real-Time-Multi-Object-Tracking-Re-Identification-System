@@ -1,0 +1,9 @@
+bytetrack:
+  high_conf_thresh: 0.6
+  low_conf_thresh: 0.1
+  track_buffer: 30
+  match_thresh: 0.8
+
+evaluation:
+  min_track_length: 3
+  min_confidence: 0.3
