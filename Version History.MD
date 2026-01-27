@@ -35,6 +35,41 @@
 - Implemented `src/tracking/bytetrack.py` for byte tracking algorithm
 - Implemented `configs/tracking.yaml` for tracking models configs
 - Implemented `tests/unit/test_tracking.py` for tracking unit tests
+- **Notes : Completed Tracking Module**
+- **Version 1.1 zip file created**
+
+---
+
+# Version 1.3
+- Implemented `src/reid/reid_base.py` for base re-id interface
+- Implemented `src/reid/resnet_reid.py`
+- Implemented `src/reid/metric_learning.py` for triplet loss
+- Implemented `src/data/market_dataset.py` for market-1501 dataset loader
+- Implemented `src/data/transforms.py` for dataset transformation
+- Implemented `configs/reid.yaml` for re-id models configs
+- Implemented `src/training/train_reid.py` for re-id training
+- Implemented `scripts/train_reid.py` the script to train the re-id model
+- Implemented `tests/unit/test_reid.py` for unit tests for re-id models
+- **Notes : Implement Re-ID module with ResNet50**
+- **Version 1.3 zip file created**
+
+---
+
+# Version 1.4
+- Implemented ``
+- Implemented ``
+- Implemented ``
+- Implemented ``
+- Implemented ``
+- Implemented ``
+- Implemented ``
+- Implemented ``
+- Implemented ``
+- Implemented ``
+- Implemented ``
+- Implemented ``
+- Implemented ``
+- Implemented ``
 - Implemented ``
 - Implemented ``
 - Implemented ``
