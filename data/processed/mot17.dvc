@@ -1,0 +1,6 @@
+outs:
+- md5: 3ea38849ccacd9d65f1f7b1d95c637c2.dir
+  size: 901932376
+  nfiles: 5319
+  hash: md5
+  path: mot17
