@@ -1,0 +1,6 @@
+outs:
+- md5: b7dbc06e74ceb3a90703bcacfd7c3362.dir
+  size: 5959357310
+  nfiles: 33810
+  hash: md5
+  path: MOT17
