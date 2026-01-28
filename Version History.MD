@@ -74,7 +74,13 @@
 - Implemented `scripts/evaluate_mot.py` to evaluate mot17 validation set
 - Implemented `scripts/evaluate_reid.py` to evaluate re-id
 - Implemented `tests/unit/test_metrics.py` to test evaluation metrics
-- Implemented ``
+- Implemented `scripts/create_test_video.py` for mot17 dataset
+- **Notes : Implemented Evaluation Metrics & Ran Inference**
+- **Version 1.4 zip file created**
+
+---
+
+# Version 1.6
 - Implemented ``
 - Implemented ``
 - Implemented ``
