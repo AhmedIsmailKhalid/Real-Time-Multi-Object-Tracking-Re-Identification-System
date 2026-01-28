@@ -63,6 +63,8 @@
 - Implemented `scripts/run_inference.py` for running inference of video
 - Implemented `tests/integration/test_inference_pipeline.py` to test inference pipeline
 - Implemented `scripts/test_pipeline_quick.py` for quick test of inference pipeline on single image
+- **Notes : Implement End-to-End Inference Pipeline**
+- **Version 1.4 zip file created**
 
 ---
 
