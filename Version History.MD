@@ -69,11 +69,11 @@
 ---
 
 # Version 1.5
-- Implemented ``
-- Implemented ``
-- Implemented ``
-- Implemented ``
-- Implemented ``
+- Implemented `src/evaluation/mot_metrics.py` for MOT dataset metrics
+- Implemented `src/evaluation/reid_metrics.py` for re-id evaluation metrics
+- Implemented `scripts/evaluate_mot.py` to evaluate mot17 validation set
+- Implemented `scripts/evaluate_reid.py` to evaluate re-id
+- Implemented `tests/unit/test_metrics.py` to test evaluation metrics
 - Implemented ``
 - Implemented ``
 - Implemented ``
