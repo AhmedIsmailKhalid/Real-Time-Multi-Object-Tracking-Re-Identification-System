@@ -81,8 +81,9 @@
 ---
 
 # Version 1.6
-- Implemented ``
-- Implemented ``
+- Updated `configs/reid.yml` for more aggressive training for better results
+- Implemented `scripts\debug_reid_eval.py` to find the bug in evaluation poor results
+- Updated `src/evaluation/reid_metrics.py` to fix the evaluation bug to fix the format `{person_id}_c{cam}s{sequence}_{frame}_{track}.jpg`
 - Implemented ``
 - Implemented ``
 - Implemented ``

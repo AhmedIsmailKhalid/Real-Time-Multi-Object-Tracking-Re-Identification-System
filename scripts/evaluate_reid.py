@@ -101,7 +101,7 @@ def main():
     checkpoint = torch.load(checkpoint_path, map_location=device)
 
     model = ResNet50ReID(
-        num_classes=751, pretrained=False, feature_dim=512  # Not used in evaluation
+        num_classes=600, pretrained=False, feature_dim=512  # Not used in evaluation
     )
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)

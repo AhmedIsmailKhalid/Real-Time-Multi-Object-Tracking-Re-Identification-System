@@ -7,9 +7,9 @@ from pathlib import Path
 
 import cv2
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from src.utils.logger import get_logger
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 logger = get_logger(__name__)
 
@@ -34,7 +34,7 @@ def create_video_from_sequence(
         return
 
     # Get image files
-    image_files = sorted(list(img_dir.glob("*.jpg")))[:max_frames]
+    image_files = sorted(img_dir.glob("*.jpg"))[:max_frames]
 
     if len(image_files) == 0:
         logger.error("No images found")

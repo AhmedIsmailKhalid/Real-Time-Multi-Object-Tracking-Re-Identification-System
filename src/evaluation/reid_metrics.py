@@ -93,13 +93,15 @@ class ReIDMetrics:
 
         for i in range(len(query_ids)):
             query_id = query_ids[i]
-            query_cam = query_cam_ids[i]
+            _query_cam = query_cam_ids[i]
 
             # Get distances for this query
             distances = dist_matrix[i]
 
-            # Remove gallery samples from same camera as query
-            valid_gallery = gallery_cam_ids != query_cam
+            # In Market-1501, images from same person + same camera are allowed
+            # We only remove junk IDs (person_id == -1 or 0)
+            junk = gallery_ids <= 0
+            valid_gallery = ~junk
 
             # Get matches (same person ID)
             matches = (gallery_ids == query_id) & valid_gallery
