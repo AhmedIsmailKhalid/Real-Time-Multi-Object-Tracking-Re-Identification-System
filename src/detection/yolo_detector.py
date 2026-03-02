@@ -67,6 +67,48 @@ class YOLODetector(DetectorBase):
             logger.error(f"Failed to load model: {e}")
             raise
 
+    # def detect(self, image: np.ndarray) -> list[tuple[float, float, float, float, float, int]]:
+    #     """
+    #     Run detection on image.
+
+    #     Args:
+    #         image: Input image (H, W, 3) in BGR format
+
+    #     Returns:
+    #         list of detections: [(x1, y1, x2, y2, confidence, class_id), ...]
+    #     """
+    #     if image is None or image.size == 0:
+    #         logger.warning("Empty image provided to detector")
+    #         return []
+
+    #     # Run inference
+    #     results = self.model(image, conf=self.conf_threshold, iou=self.iou_threshold, verbose=False)
+
+    #     # Parse results
+    #     detections = []
+    #     for result in results:
+    #         boxes = result.boxes
+
+    #         if boxes is None or len(boxes) == 0:
+    #             continue
+
+    #         for box in boxes:
+    #             # Get box coordinates
+    #             x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+
+    #             # Get confidence and class
+    #             confidence = float(box.conf[0].cpu().numpy())
+    #             class_id = int(box.cls[0].cpu().numpy())
+
+    #             # Filter by target classes if specified
+    #             if self.target_classes and class_id not in self.target_classes:
+    #                 continue
+
+    #             detections.append((x1, y1, x2, y2, confidence, class_id))
+
+    #     return detections
+
+
     def detect(self, image: np.ndarray) -> list[tuple[float, float, float, float, float, int]]:
         """
         Run detection on image.
@@ -81,8 +123,15 @@ class YOLODetector(DetectorBase):
             logger.warning("Empty image provided to detector")
             return []
 
-        # Run inference
-        results = self.model(image, conf=self.conf_threshold, iou=self.iou_threshold, verbose=False)
+        # Run inference with performance optimizations
+        results = self.model(
+            image,
+            conf=self.conf_threshold,
+            iou=self.iou_threshold,
+            verbose=False,
+            half=True,  # ← ADD: Use FP16 for 2x speed
+            device=self.device
+        )
 
         # Parse results
         detections = []

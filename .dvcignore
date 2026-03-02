@@ -1,3 +1,8 @@
 # Add patterns of files dvc should ignore, which could improve
 # the performance. Learn more at
 # https://dvc.org/doc/user-guide/dvcignore
+
+# Ignore datasets - they're public and don't change
+data/Market-1501/
+data/MOT17/
+data/MOT20/

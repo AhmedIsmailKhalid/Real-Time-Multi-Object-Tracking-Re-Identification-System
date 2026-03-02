@@ -1,3 +1,4 @@
 /config.local
 /tmp
 /cache
+git add models/reid/final/resnet50_market_best.pth.dvc

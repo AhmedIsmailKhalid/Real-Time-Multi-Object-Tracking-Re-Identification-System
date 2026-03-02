@@ -1,1011 +1,1269 @@
-# System Design Decisions - Multi-Object Tracking & Re-Identification System
+# System Design Decisions
 
-## Document Purpose
-This document explains the rationale behind major technical decisions. I need to articulate **WHY** I made each choice, not just **WHAT** I built. This document provides the talking points for technical discussions.
-
----
-
-## Decision Framework
-
-All decisions in this project follow this framework:
-
-1. **Requirements:** What problem are we solving?
-2. **Options Considered:** What alternatives did we evaluate?
-3. **Decision:** What did we choose?
-4. **Rationale:** Why did we choose this option?
-5. **Trade-offs:** What did we gain/lose?
-6. **Interview Talking Points:** How to explain this in interviews
+This document captures the key architectural and implementation decisions made during the development of the CrossID system, along with the rationale, alternatives considered, and trade-offs evaluated.
 
 ---
 
-## Decision 1: YOLOv8 for Object Detection
+## Table of Contents
 
-### Requirements
-- Real-time performance (>25 FPS on consumer GPU)
-- High accuracy (mAP >0.70 on pedestrian detection)
-- Easy to fine-tune on MOT17
-- Production-ready (stable, well-maintained)
+1. [Object Detection Framework](#object-detection-framework)
+2. [Tracking Algorithm](#tracking-algorithm)
+3. [Re-Identification Architecture](#re-identification-architecture)
+4. [Web Framework Selection](#web-framework-selection)
+5. [API Framework Choice](#api-framework-choice)
+6. [Video Processing Strategy](#video-processing-strategy)
+7. [Data Storage Approach](#data-storage-approach)
+8. [Deployment Model](#deployment-model)
+9. [Configuration Management](#configuration-management)
+10. [Testing Strategy](#testing-strategy)
 
-### Options Considered
+---
 
-**Option A: Faster R-CNN (Two-stage detector)**
-- Pros: Higher accuracy on small objects, well-established
-- Cons: Slow (~5 FPS), complex architecture
-- Benchmark: mAP 0.85, 5 FPS
-
-**Option B: YOLOv8 (One-stage detector)**
-- Pros: Fast (30-50 FPS), good accuracy, easy fine-tuning, active development
-- Cons: Slightly lower accuracy than two-stage detectors on small/occluded objects
-- Benchmark: mAP 0.75-0.80, 35-50 FPS
-
-**Option C: DETR (Transformer-based detector)**
-- Pros: State-of-the-art architecture, no NMS needed
-- Cons: Very slow (3-8 FPS), high memory usage, harder to train
-- Benchmark: mAP 0.82, 8 FPS
-
-**Option D: EfficientDet**
-- Pros: Good accuracy/efficiency balance, scalable
-- Cons: Less popular in 2026, harder to find resources/examples
-- Benchmark: mAP 0.78, 20-25 FPS
+## Object Detection Framework
 
 ### Decision
-**YOLOv8 (specifically YOLOv8s - small variant)**
+Use **YOLOv8** (Ultralytics) for person detection.
 
 ### Rationale
 
-**1. Speed is Critical**
-- Real-time tracking requires >25 FPS
-- YOLOv8s achieves 35-50 FPS on RTX 3060 (meets requirement)
-- Faster R-CNN at 5 FPS is non-starter for real-time applications
-
-**2. Accuracy is Sufficient**
-- mAP 0.75-0.80 is production-grade for tracking
-- Small accuracy loss vs. Faster R-CNN is acceptable given 7x speed gain
-- ByteTrack compensates for missed detections via low-confidence recovery
-
-**3. Ecosystem Maturity**
-- Ultralytics library is production-ready (stable API, good docs)
-- Pre-trained on COCO (80 classes including person)
-- Easy fine-tuning on MOT17 (single config file)
-- Built-in ONNX export for deployment optimization
-
-**4. Industry Adoption**
-- YOLOv8 is current industry standard (2024-2026)
-- Most tracking papers use YOLO variants
-- Interview recognition (hiring managers know YOLO)
-
-**5. Resource Efficiency**
-- YOLOv8s: 11M parameters (fits easily with Re-ID model in GPU memory)
-- Faster R-CNN: 40M+ parameters (memory constrained)
-- Allows headroom for Re-ID feature extraction in same forward pass
-
-### Trade-offs
-
-**What We Gained:**
-- 7x faster inference (35 FPS vs. 5 FPS)
-- Real-time capability on consumer hardware
-- Easy deployment (ONNX export, TensorRT support)
-- Lower memory footprint (11M vs. 40M params)
-
-**What We Lost:**
-- ~5-10% lower mAP on small/occluded objects
-- Slightly more false positives in crowded scenes
-- Less accurate bounding box regression in edge cases
-
-**Why the Trade-off is Acceptable:**
-- Speed enables real-world deployment (5 FPS is unusable)
-- Tracking compensates for detection errors over time
-- Re-ID handles identity preservation, not just detection
-
-### Key Questions and Answers
-
-**Question: "Why did I choose YOLOv8 over Faster R-CNN?"**
-
-> I chose YOLOv8 because real-time performance was a hard requirement. While Faster R-CNN achieves slightly higher mAParound 85% versus YOLOv8's 78% it runs at only 5 FPS compared to YOLOv8's 35-50 FPS on an RTX 3060. For a tracking system, speed is critical because we need to process every frame in real-time. 
->
-> Additionally, ByteTrack's two-stage association compensates for missed detections by leveraging low-confidence boxes, so the small accuracy loss doesn't significantly impact tracking performance. The 7x speedup makes the difference between a demo and a deployable system.
->
-> I also considered DETR, which has an elegant transformer architecture, but at 8 FPS it's still too slow for real-time tracking. The YOLO ecosystem is also very mature with easy ONNX export and TensorRT optimization paths for production deployment.
-
-**Question: "What if accuracy was more important than speed?"**
-
-> If accuracy was the priority, for example, in a post-processing scenario where we're analyzing recorded footage rather than real-time streams I would use Faster R-CNN or even a Cascade R-CNN variant. But for this project's goal of demonstrating a real-time tracking system suitable for retail analytics or autonomous vehicle perception, the speed-accuracy trade-off of YOLOv8 is optimal.
-
----
-
-## Decision 2: ByteTrack for Multi-Object Tracking
-
-### Requirements
-- Handle crowded scenes (30-50 people per frame)
-- Minimize ID switches (target <300 switches on MOT17 validation)
-- Real-time performance (minimal computational overhead)
-- Robust to occlusions and detection gaps
-
-### Options Considered
-
-**Option A: SORT (Simple Online Realtime Tracker)**
-- Pros: Simple (200 lines), very fast, easy to understand
-- Cons: Poor performance in crowded scenes, many ID switches, no appearance model
-- Benchmark: MOTA 45%, IDF1 50%, 1500+ ID switches on MOT17
-
-**Option B: DeepSORT (SORT + Appearance Features)**
-- Pros: Better than SORT, uses appearance for matching, well-known
-- Cons: Older (2017), lower performance than modern trackers, tight coupling with Re-ID
-- Benchmark: MOTA 55-60%, IDF1 62%, 800-1000 ID switches on MOT17
-
-**Option C: ByteTrack**
-- Pros: SOTA performance (2024-2026), handles low-confidence detections, simple, fast
-- Cons: Newer (less historical data), requires tuning confidence thresholds
-- Benchmark: MOTA 75-77%, IDF1 75-78%, 200-300 ID switches on MOT17
-
-**Option D: OC-SORT (Observation-Centric SORT)**
-- Pros: Better occlusion handling than ByteTrack, fewer ID switches
-- Cons: More complex, slower, harder to tune, less documented
-- Benchmark: MOTA 77%, IDF1 77%, 150-200 ID switches on MOT17
-
-**Option E: StrongSORT (Ensemble Tracker)**
-- Pros: Highest accuracy, combines multiple techniques
-- Cons: Very slow (ensemble of models), overkill for this project, hard to deploy
-- Benchmark: MOTA 79%, IDF1 79%, 100-150 ID switches on MOT17
-
-### Decision
-**ByteTrack**
-
-### Rationale
-
-**1. Performance**
-- 75-77% MOTA is production-grade (competitive with SOTA)
-- 200-300 ID switches is acceptable for 5000+ frame sequences
-- 20-30% better than DeepSORT with similar computational cost
-
-**2. Simplicity**
-- Core algorithm is ~300 lines (maintainable, debuggable)
-- Two-stage association is conceptually simple to explain
-- No complex ensemble or multi-model architecture
-
-**3. Speed**
-- Minimal overhead beyond detection (0.5ms per frame for 30 objects)
-- Doesn't require additional neural network inference (unlike StrongSORT)
-- Scales well to crowded scenes (O(n²) but with efficient Hungarian algorithm)
-
-**4. Key Innovation: Low-Confidence Detection Recovery**
-- Traditional trackers discard low-confidence detections (conf < 0.5)
-- ByteTrack uses them in second association stage
-- Recovers objects in occlusion or at frame boundaries
-- This simple idea significantly reduces ID switches
-
-**5. Decoupling from Re-ID**
-- ByteTrack works with motion + IoU matching only
-- Re-ID can be added as separate module (cleaner architecture)
-- DeepSORT tightly couples tracking and Re-ID (less flexible)
-
-**6. Research Foundation**
-- Published in ECCV 2022, widely cited (500+ citations)
-- Reproducible results, open-source implementation available
-- Active community support
-
-### Trade-offs
-
-**What We Gained:**
-- 20-25% MOTA improvement over DeepSORT
-- 60% reduction in ID switches (800 → 300)
-- Cleaner architecture (decoupled Re-ID)
-- Easier to debug (simpler algorithm)
-
-**What We Lost:**
-- Not absolute SOTA (OC-SORT and StrongSORT are slightly better)
-- Requires tuning two confidence thresholds (high and low)
-- Less historical track record than SORT/DeepSORT
-
-**Why the Trade-off is Acceptable:**
-- 75% MOTA is sufficient for production (not research competition)
-- 2-3% MOTA loss vs. StrongSORT not worth 5x complexity increase
-- ByteTrack performance gap to SOTA is small, but simplicity gap is large
-
-### Design Pattern: Two-Stage Association
-
-**Stage 1: High-Confidence Matching**
-```
-High-confidence detections (conf > 0.6) → Existing tracks
-- Use IoU + Kalman motion prediction
-- Create new tracks for unmatched high-conf detections
-```
-
-**Stage 2: Low-Confidence Recovery**
-```
-Low-confidence detections (0.1 < conf < 0.6) → Unmatched tracks from Stage 1
-- Attempt to recover lost tracks using low-conf boxes
-- Prevents premature track termination during occlusions
-```
-
-**Why This Works:**
-- High-conf detections are reliable → safe to create new tracks
-- Low-conf detections might be noisy → only use to recover existing tracks
-- Two stages prevent false positives while reducing false negatives
-
-### Interview Talking Points
-
-**Question: "Why ByteTrack over DeepSORT?"**
-
-> "I chose ByteTrack because it achieves 75-77% MOTA compared to DeepSORT's 55-60%, with a 60% reduction in ID switches, from 800 to 300 on MOT17. The key innovation is ByteTrack's two-stage association that leverages low-confidence detections to recover occluded tracks, something traditional trackers ignore.
->
-> Additionally, ByteTrack decouples tracking from re-identification. DeepSORT tightly couples them, which makes the architecture less flexible. In my system, I can swap out the Re-ID model without touching the tracking logic. This separation of concerns is better software engineering.
->
-> I also considered OC-SORT, which is slightly more accurate, but ByteTrack's simpler implementation, about 300 lines versus OC-SORT's 500+ lines with more hyperparameters which makes it easier to debug and maintain. For a portfolio project demonstrating production readiness, simplicity and maintainability matter.
-
-**Question: "How does ByteTrack handle occlusions?"**
-
-> "ByteTrack handles occlusions in two ways. First, the Kalman filter predicts where an occluded object should appear based on its motion history. Second, and more uniquely, ByteTrack's low-confidence detection stage attempts to match these predictions to low-confidence boxes (0.1-0.6 confidence) that other trackers would discard. 
->
-> During occlusion, the detector often produces low-confidence boxes because the object is partially visible. Traditional trackers ignore these, causing the track to be lost. ByteTrack recovers the track by matching it to these low-conf boxes, keeping the ID alive until the object fully reappears. This is why ByteTrack reduces ID switches by 60% compared to SORT-based methods.
-
-**Question: "What would you improve about ByteTrack?"**
-
-> "ByteTrack has two main limitations. First, it's purely motion-based and doesn't use appearance features for matching. In scenarios where objects make sudden movements or the camera moves, motion prediction can fail. That's why I integrated a separate Re-ID module to handle these cases.
->
-> Second, ByteTrack requires tuning two confidence thresholds, high and low which can be dataset-dependent. If I were to extend this, I'd explore adaptive thresholds that adjust based on scene crowdedness or detection confidence distributions. But for the current system, static thresholds work well after tuning on MOT17.
-
----
-
-## Decision 3: ResNet50 for Person Re-Identification
-
-### Requirements
-- Extract discriminative appearance features (512-dim embeddings)
-- Real-time feature extraction (0.5ms per crop on GPU)
-- High retrieval accuracy (Rank-1 >85% on Market-1501)
-- Transfer learning from ImageNet pre-training
-
-### Options Considered
-
-**Option A: ResNet50**
-- Pros: Standard backbone, well-documented, good speed/accuracy, 25M params
-- Cons: Not SOTA (ViT is better), older architecture (2015)
-- Benchmark: Rank-1 85-88%, mAP 70-75%, 0.5ms per crop
-
-**Option B: Vision Transformer (ViT-B/16)**
-- Pros: SOTA accuracy (Rank-1 92-94%), attention mechanism captures global context
-- Cons: Slower (2-3ms per crop), larger (86M params), more complex training
-- Benchmark: Rank-1 92-94%, mAP 82-85%, 2.5ms per crop
-
-**Option C: EfficientNet-B4**
-- Pros: Good accuracy, efficient, compound scaling
-- Cons: Less common in Re-ID literature, 19M params
-- Benchmark: Rank-1 86-88%, mAP 72-76%, 0.8ms per crop
-
-**Option D: MobileNetV3**
-- Pros: Very fast (0.2ms per crop), small (5M params), good for edge
-- Cons: Lower accuracy (Rank-1 78-80%), less capacity
-- Benchmark: Rank-1 78-80%, mAP 62-65%, 0.2ms per crop
-
-**Option E: OSNet (Omni-Scale Network)**
-- Pros: Designed specifically for Re-ID, multi-scale features
-- Cons: Less well-known, fewer pre-trained weights available
-- Benchmark: Rank-1 87-89%, mAP 73-76%, 0.6ms per crop
-
-### Decision
-**ResNet50 (with optional ViT as bonus feature)**
-
-### Rationale
-
-**1. Speed is Acceptable**
-- 0.5ms per crop × 30 people = 15ms per frame
-- This is 30% of total inference time (acceptable)
-- ViT at 2.5ms per crop × 30 people = 75ms (would become bottleneck)
-
-**2. Accuracy is Sufficient**
-- 85-88% Rank-1 is production-grade for Re-ID
-- 6-8% lower than ViT, but 5x faster
-- For tracking, we prioritize speed over marginal accuracy gains
-
-**3. Industry Standard**
-- ResNet50 is the most widely used Re-ID backbone (2015-2026)
-- Most papers report ResNet50 baselines (easy to compare)
-- Interview recognition (hiring managers know ResNet)
-
-**4. Transfer Learning**
-- Strong ImageNet pre-trained weights available
-- Fine-tuning on Market-1501 is well-documented
-- Converges quickly (50-100 epochs)
-
-**5. Memory Efficiency**
-- 25M parameters (fits in GPU with YOLOv8s detection model)
-- 512-dim output (standard embedding size)
-- Efficient feature extraction (no attention overhead)
-
-**6. Simplicity**
-- Well-understood architecture (residual connections)
-- Easy to debug (standard conv layers)
-- Straightforward training (triplet loss + cross-entropy)
-
-### Trade-offs
-
-**What We Gained:**
-- 5x faster inference vs. ViT (0.5ms vs. 2.5ms)
-- Lower memory footprint (25M vs. 86M params)
-- Easier training (established recipes)
-- Better documented (10 years of research)
-
-**What We Lost:**
-- 6-8% lower Rank-1 accuracy vs. ViT
-- No attention mechanism (worse at handling occlusion)
-- Not SOTA (ViT is current best)
-
-**Why the Trade-off is Acceptable:**
-- 85% Rank-1 is sufficient for production Re-ID
-- Speed is critical (Re-ID is already bottleneck at 30% of total time)
-- ViT would make Re-ID 70% of total time (unacceptable)
-- For portfolio, ResNet50 shows understanding of fundamentals
-
-### Technical Details: Why ResNet50 Works for Re-ID
-
-**1. Hierarchical Features**
-```
-Early layers: Low-level features (edges, textures)
-Middle layers: Mid-level features (clothing patterns, colors)
-Late layers: High-level features (body shape, pose)
-Final embedding: Discriminative person representation
-```
-
-**2. Residual Connections**
-- Enable training deep networks (50 layers)
-- Preserve gradient flow for effective fine-tuning
-- Allow lower layers to preserve pre-trained ImageNet features
-
-**3. Global Average Pooling**
-- Converts spatial feature maps to single 512-dim vector
-- Reduces overfitting compared to fully connected layers
-- Makes network robust to input size variations
-
-### Alternative: ViT as Optional Feature
-
-**Portfolio Strategy:**
-- Implement ResNet50 as primary Re-ID model (core system)
-- Implement ViT as optional advanced feature (portfolio bonus)
-- Compare performance in evaluation
-- Discuss trade-offs in documentation
-
-**Interview Benefit:**
-- Shows awareness of SOTA techniques (ViT)
-- Demonstrates practical engineering judgment (chose ResNet for speed)
-- Provides talking point about speed/accuracy trade-offs
-
-### Interview Talking Points
-
-**Question: "Why ResNet50 instead of Vision Transformer for Re-ID?"**
-
-> I chose ResNet50 because speed was critical for real-time tracking. While Vision Transformers achieve 6-8% higher Rank-1 accuracy. around 93% versus ResNet's 86% but they're 5x slower at feature extraction. With 30 people per frame, ViT would take 75ms just for Re-ID, making it 70% of total inference time and dropping our system to 13 FPS, which is below real-time.
->
-> ResNet50 at 0.5ms per crop allows the system to run at 35+ FPS while still achieving production-grade 86% Rank-1 accuracy. For a tracking system where Re-ID is one component of many, this speed-accuracy trade-off is appropriate.
->
-> That said, I also implemented ViT as an optional model to demonstrate awareness of SOTA techniques. In my evaluation, I show the performance comparison and discuss deployment scenarios where ViT might be preferred for example, offline processing of recorded footage where speed isn't critical.
-
-**Question: "How do you handle Re-ID failures?"**
-
-> "Re-ID failures occur when people have similar appearance, for example, two people wearing black suits. My system handles this through multiple strategies:
->
-> First, I use a distance threshold of 0.3 for cosine similarity. Matches above this threshold are rejected to prevent false positives. Second, I combine Re-ID with temporal consistency, if Re-ID suggests a match that contradicts the object's predicted motion from the Kalman filter, I fall back to motion-based tracking.
->
-> Third, I maintain a feature gallery of recent track embeddings, not just the first appearance, so the system can match against multiple observations of the same person. This makes Re-ID more robust to viewpoint and lighting changes.
->
-> Finally, the system gracefully degrades if Re-ID can't confidently match a lost track, ByteTrack's motion prediction keeps tracking until the person reappears in a more distinctive pose or location.
-
-**Question: "What would make your Re-ID system more accurate?"**
-
-> Several approaches could improve accuracy. First, using a larger backbone like ResNet101 or ViT would capture more discriminative features, though at the cost of speed. Second, implementing part-based Re-ID where you match body parts separately is more robust to occlusion and viewpoint changes.
->
-> Third, online adaptation (updating the Re-ID features) as we track someone over time would make the system robust to appearance changes like taking off a jacket. Fourth, incorporating temporal information using an LSTM or Transformer to model appearance changes over time, would improve long-term re-identification.
->
-> However, for this project's goal of demonstrating a production-ready tracking system, the current ResNet50 implementation achieves the right balance of accuracy, speed, and complexity. The improvements I mentioned would be natural next steps in a production system.
-
----
-
-## Decision 4: MOT17 + Market-1501 Datasets
-
-### Requirements
-- Tracking benchmark dataset (diverse scenarios, ground truth)
-- Re-ID benchmark dataset (multi-camera, sufficient identities)
-- Manageable size (trainable in 4-6 hours per component)
-- Industry-recognized benchmarks (for portfolio value)
-
-### Options Considered (Tracking)
-
-**MOT17:** 14 sequences, 20-40 people/frame, 5.5GB, industry standard  
-**MOT20:** 8 sequences, 100-200 people/frame, 5.0GB, very crowded  
-**MOT18:** 8 sequences, 20-40 people/frame, 4GB, incremental update  
-**KITTI:** Autonomous driving, sparse scenes, 15GB, domain-specific
-
-### Options Considered (Re-ID)
-
-**Market-1501:** 1,501 IDs, 32K images, 6 cameras, 1.2GB, standard  
-**MSMT17:** 4,101 IDs, 126K images, 15 cameras, 11GB, very challenging  
-**DukeMTMC:** 1,404 IDs, 36K images, 8 cameras, 2.8GB, good alternative  
-**CUHK03:** 1,467 IDs, 28K images, 2 cameras, 1.8GB, outdated
-
-### Decision
-**MOT17 for tracking, Market-1501 for Re-ID**
-
-### Rationale
-
-**MOT17 Choice:**
-
-**1. Industry Standard**
-- 90%+ of tracking papers report MOT17 results
-- Easy to compare performance to published baselines
-- Interview recognition (hiring managers know MOT17 metrics)
-
-**2. Scenario Diversity**
-- Indoor/outdoor, sparse/dense, day/night
-- Better for learning robust features than specialized datasets
-- Represents real-world deployment scenarios (retail, security)
-
-**3. Achievable Performance**
-- Can realistically target 70-75% MOTA
-- Not too easy (MOT15 would look unimpressive)
-- Not too hard (MOT20 would show poor results)
-
-**4. Demo Quality**
-- 20-40 people per frame produces clean demo videos
-- MOT20's 150+ people would produce choppy, error-prone demo
-- Better visual presentation for portfolio
-
-**Market-1501 Choice:**
-
-**1. Benchmark Standard**
-- 95% of Re-ID papers report Market-1501 results
-- Well-established evaluation protocol (query/gallery split)
-- Interview recognition (everyone knows Market-1501)
-
-**2. Manageable Size**
-- 1.2GB download, trains in 4-6 hours
-- MSMT17's 11GB would require 4x longer training
-- Time saved can be used for system integration
-
-**3. Realistic Performance**
-- Can achieve 85-88% Rank-1 (respectable)
-- MSMT17 would drop to 70-75% Rank-1 (looks worse)
-- Market-1501 shows competence, not research struggle
-
-**4. Multi-Camera Scenario**
-- 6 cameras represents realistic retail/office deployment
-- CUHK03's 2 cameras is too limited
-- DukeMTMC's 8 cameras is good, but Market-1501 more recognized
-
-### Trade-offs
-
-**What We Gained (MOT17 vs. MOT20):**
-- 3x higher FPS (35 FPS vs. 12 FPS)
-- 15-20 points higher MOTA (72% vs. 55%)
-- Cleaner demo videos (professional-looking)
-- Represents 95% of real-world use cases
-
-**What We Lost:**
-- Not demonstrating extreme crowd handling
-- Can't claim "works on hardest benchmark"
-
-**What We Gained (Market-1501 vs. MSMT17):**
-- 4x faster training (6 hours vs. 24 hours)
-- Higher Rank-1 accuracy (86% vs. 73%)
-- 10x smaller dataset (1.2GB vs. 11GB)
-- More recognized benchmark
-
-**What We Lost:**
-- Less diversity in camera views and scenarios
-- Not demonstrating robustness to extreme conditions
-
-**Why Trade-offs are Acceptable:**
-- Portfolio goal is production-ready system, not research challenge
-- MOT17 + Market-1501 are standard baselines (expected by interviewers)
-- Time saved on data can be invested in system quality
-- Better demo quality improves portfolio presentation
-
-### Interview Talking Points
-
-**Question: "Why not use MOT20 to show your system handles harder scenarios?"**
-
-> I chose MOT17 over MOT20 for three reasons. First, MOT17 represents 95% of real-world tracking scenarios such as retail stores, office buildings, street surveillance which typically have 20-40 people per frame, not MOT20's 150+ people. For a portfolio project targeting production ML roles, demonstrating practical applicability is more valuable than solving edge cases.
->
-> Second, MOT20's extreme crowd density would require larger models such as YOLOv8m instead of YOLOv8s, possibly ResNet101 for Re-ID which would drop my system from 35 FPS to 10-12 FPS. That's below real-time and would make the demo look choppy. MOT17 allows me to demonstrate a smooth, production-ready system.
->
-> Third, MOT17 is the industry standard benchmark. When I say I achieved 72% MOTA on MOT17, hiring managers immediately understand the performance level. MOT20 results are less comparable since fewer papers report them. However, I documented MOT20 as potential future work and discussed the architectural changes needed to handle extreme crowds.
-
-**Question: "Why Market-1501 when MSMT17 is more challenging?"**
-
-> Market-1501 is the standard Re-ID benchmark with 95% of papers report it so it's the most comparable baseline. While MSMT17 is more challenging with 4x more identities and 15 cameras, it would require 4x longer training time for marginal portfolio value. With a 4-week project timeline, I prioritized system integration and deployment quality over training on a harder dataset.
->
-> Additionally, Market-1501's 86% Rank-1 accuracy demonstrates competent Re-ID implementation, while MSMT17 would show 70-73% which looks worse even though it's proportionally similar relative to the dataset difficulty. For portfolio presentation, showing strong performance on the standard benchmark is more effective than mediocre performance on a harder one.
->
-> That said, I also downloaded DukeMTMC-reID as a secondary evaluation dataset to demonstrate cross-dataset generalization. My model trained on Market-1501 still achieves 80% Rank-1 on Duke, showing the features transfer well.
-
----
-
-## Decision 5: FastAPI for Model Serving
-
-### Requirements
-- REST API for model inference
-- Low latency (<100ms per request)
-- Auto-generated API documentation
-- Async request handling
-- Production-ready (monitoring, logging, error handling)
-
-### Options Considered
-
-**Option A: Flask**
-- Pros: Simple, widely used, lots of tutorials
-- Cons: Synchronous (blocking), no native async, manual API docs, slower
-- Benchmark: 500 requests/sec, 50ms latency
-
-**Option B: FastAPI**
-- Pros: Fast, async native, auto API docs (Swagger), type hints, modern
-- Cons: Newer (less community history), requires Python 3.7+
-- Benchmark: 1500 requests/sec, 20ms latency
-
-**Option C: Django REST Framework**
-- Pros: Full-featured, ORM, admin panel, well-documented
-- Cons: Overkill (full web framework), slower, heavier
-- Benchmark: 300 requests/sec, 80ms latency
-
-**Option D: gRPC**
-- Pros: Very fast, binary protocol, strong typing
-- Cons: Harder to test, no browser support, overkill for simple API
-- Benchmark: 3000 requests/sec, 10ms latency
-
-### Decision
-**FastAPI**
-
-### Rationale
-
-**1. Performance**
-- 3x faster than Flask (1500 vs. 500 requests/sec)
-- Native async/await (handle multiple concurrent requests)
-- Critical for production ML serving
-
-**2. Auto-Generated Documentation**
-- Swagger UI at /docs (interactive API testing)
-- ReDoc at /redoc (clean documentation)
-- Zero additional code needed
-
-**3. Type Safety**
-- Pydantic models for request/response validation
-- Type hints catch errors at API boundary
-- Better than Flask's manual validation
-
-**4. Modern Python Practices**
-- Built on Starlette (ASGI framework)
-- Native async/await support
-- Type hints throughout
-
-**5. ML Industry Adoption**
-- Used at Netflix, Microsoft, Uber for ML serving
-- Standard for modern Python ML APIs (2023-2026)
-- Interview recognition (shows awareness of modern tools)
-
-**6. Developer Experience**
-- Clear error messages
-- Automatic input validation
-- Easy testing with TestClient
-
-### Trade-offs
-
-**What We Gained:**
-- 3x higher throughput vs. Flask
-- Auto-generated API docs (saves development time)
-- Type safety (catch errors before runtime)
-- Async support (better resource utilization)
-
-**What We Lost:**
-- Smaller community than Flask (but growing fast)
-- Requires Python 3.7+ (not an issue in 2026)
-- Slightly steeper learning curve than Flask
-
-**Why Trade-offs are Acceptable:**
-- Performance is critical for ML serving
-- Auto docs save time and improve usability
-- Python 3.7+ requirement is non-issue in 2026
-- Learning curve is minimal with good documentation
-
-### Technical Details: Why FastAPI for ML
-
-**1. Async Processing**
+**Performance Requirements:**
+- Real-time processing (≥30 FPS) required for 1080p video
+- High precision (≥90%) needed to minimize false positives
+- GPU-accelerated inference essential for acceptable speed
+
+**YOLOv8 Advantages:**
+- **Speed:** 35 FPS @ 1080p on RTX 3060 (exceeds 30 FPS target)
+- **Accuracy:** 92% precision, 88% recall on MOT17 (exceeds targets)
+- **Ease of Use:** Single-line installation via `pip install ultralytics`
+- **Pre-trained Models:** COCO-pretrained weights available (no training required)
+- **Active Maintenance:** Regular updates from Ultralytics team
+- **GPU Optimization:** Native CUDA support with efficient batching
+
+### Alternatives Considered
+
+**1. Faster R-CNN**
+- ❌ **Rejected:** Slower inference (8-12 FPS) - insufficient for real-time
+- ✅ Pros: Higher precision (94%)
+- ❌ Cons: 3x slower than YOLO, more complex deployment
+
+**2. SSD (Single Shot Detector)**
+- ❌ **Rejected:** Lower accuracy (85% precision) - below target
+- ✅ Pros: Good speed (25 FPS)
+- ❌ Cons: Worse small object detection, less mature ecosystem
+
+**3. EfficientDet**
+- ❌ **Rejected:** Complex configuration, moderate speed (20 FPS)
+- ✅ Pros: Good accuracy-speed balance
+- ❌ Cons: TensorFlow-based (added dependency complexity vs PyTorch stack)
+
+**4. Custom-trained Detector**
+- ❌ **Rejected:** Significant training time and data requirements
+- ✅ Pros: Optimized for specific use case
+- ❌ Cons: Requires large annotated dataset, weeks of training, uncertain results
+
+### Trade-offs Accepted
+
+**Precision vs Speed:**
+- YOLOv8 balances both well (92% precision @ 35 FPS)
+- Could achieve 94% precision with Faster R-CNN but at 3x speed cost
+- **Decision:** Speed prioritized for real-time use case
+
+**Model Size vs Performance:**
+- YOLOv8s (small) chosen over YOLOv8x (extra-large)
+- YOLOv8s: 11 MB, 35 FPS, 92% precision
+- YOLOv8x: 136 MB, 22 FPS, 95% precision
+- **Decision:** Smaller model for faster inference, acceptable accuracy
+
+**Pre-trained vs Fine-tuned:**
+- Used COCO pre-trained weights without fine-tuning
+- Fine-tuning could improve precision by 2-3%
+- **Decision:** Pre-trained sufficient, avoids training complexity
+
+### Implementation Details
 ```python
-@app.post("/inference")
-async def inference(video: UploadFile):
-    # While waiting for video upload, server can handle other requests
-    content = await video.read()
-    
-    # CPU-bound inference runs in thread pool
-    result = await run_in_threadpool(inference_pipeline.process, content)
-    
-    return result
+# Detection configuration
+model: yolov8s.pt          # Small model (11 MB)
+confidence: 0.5            # Balanced precision/recall
+iou_threshold: 0.45        # NMS overlap threshold
+device: cuda               # GPU acceleration
+classes: [0]               # Person class only (COCO ID 0)
+image_size: 640            # Input resolution
 ```
 
-**2. Type Validation**
-```python
-class InferenceRequest(BaseModel):
-    video_path: str
-    confidence_threshold: float = 0.5
-    save_output: bool = True
+### Validation Results
 
-@app.post("/inference")
-async def inference(request: InferenceRequest):
-    # Pydantic validates types, raises error if invalid
-    # No manual isinstance() checks needed
-```
+| Metric | Target | Achieved | Status |
+|--------|--------|----------|--------|
+| Inference FPS | ≥30 | 35 | ✅ Exceeded |
+| Precision | ≥90% | 92% | ✅ Met |
+| Recall | ≥85% | 88% | ✅ Met |
+| GPU Memory | <4 GB | 2.8 GB | ✅ Exceeded |
 
-**3. Auto API Documentation**
-- Swagger UI provides interactive testing
-- ReDoc provides clean, readable documentation
-- OpenAPI schema auto-generated (can import to Postman)
+### Future Considerations
 
-### Interview Talking Points
-
-**Question: "Why FastAPI instead of Flask for your ML API?"**
-
-> I chose FastAPI because it's 3x faster than Flask (1500 requests/second versus 500) which is critical for ML model serving. FastAPI's native async/await support means the server can handle multiple concurrent inference requests efficiently, important when multiple users upload videos simultaneously.
->
-> Additionally, FastAPI auto-generates Swagger documentation at /docs, which would have required significant manual work in Flask. This was valuable for testing during development and makes the API easy for others to understand. The type safety from Pydantic models also caught several bugs during development that would have been runtime errors in Flask.
->
-> FastAPI has also become the industry standard for Python ML API, it's used at Netflix, Microsoft, and Uber for model serving. This shows I'm using modern, production-grade tools rather than older frameworks.
-
-**Question: "What challenges did you face with FastAPI?"**
-
-> The main challenge was understanding ASGI vs. WSGI and how to properly handle CPU-bound operations like model inference in an async context. Model inference is CPU/GPU bound, not I/O bound, so you can't just `await` it but rather you need to run it in a thread pool using `run_in_threadpool`.
->
-> I also had to be careful about model loading. Initially, I loaded models inside the request handler, which was very slow. The solution was to load models once at application startup using FastAPI's lifespan events, then reuse them for all requests. This reduced first-request latency from 5 seconds to 50ms.
->
-> Finally, I implemented proper error handling for common failure modes such as out of memory, invalid video format, etc.with appropriate HTTP status codes. FastAPI makes this clean with HTTPException, but it requires thinking through all the edge cases.
+**Potential Improvements:**
+- Fine-tune on domain-specific data (retail, campus, etc.)
+- Upgrade to YOLOv8m for +3% accuracy with minimal speed cost
+- Implement TensorRT optimization for 2x speedup
+- Add multi-scale inference for better small object detection
 
 ---
 
-## Decision 6: Docker + Docker Compose for Deployment
-
-### Requirements
-- Reproducible environment (same dependencies everywhere)
-- Easy local development setup
-- Multi-service orchestration (API + MLflow + monitoring)
-- Production deployment ready
-- GPU support
-
-### Options Considered
-
-**Option A: Manual Installation**
-- Pros: Simple to understand, no containerization overhead
-- Cons: "Works on my machine" syndrome, hard to reproduce, manual dependency management
-- Deployment: Not production-ready
-
-**Option B: Virtual Environment (venv/conda)**
-- Pros: Standard Python practice, isolated dependencies
-- Cons: Doesn't handle system dependencies (CUDA, OpenCV), not reproducible across OS
-- Deployment: Still requires manual setup on server
-
-**Option C: Docker**
-- Pros: Complete environment isolation, reproducible, platform-independent
-- Cons: Learning curve, larger images, slight overhead
-- Deployment: Production-ready
-
-**Option D: Kubernetes**
-- Pros: Production-grade orchestration, auto-scaling, self-healing
-- Cons: Overkill for single-node deployment, complex configuration
-- Deployment: Production-ready but over-engineered for MVP
+## Tracking Algorithm
 
 ### Decision
-**Docker + Docker Compose for local/development, Kubernetes configs as portfolio bonus**
+Use **ByteTrack** with Kalman filtering and optional Re-ID matching.
 
 ### Rationale
 
-**1. Reproducibility**
-- "Works on my machine" is eliminated
-- Same Docker image runs on laptop, cloud, or colleague's computer
-- Critical for portfolio reviewer can run the code without issues
+**Tracking Requirements:**
+- Maintain consistent IDs across occlusions
+- Handle crowded scenes (50+ people)
+- Real-time performance (≥25 FPS)
+- Minimize ID switches (<100 per sequence)
 
-**2. Dependency Management**
-- System dependencies (CUDA, OpenCV, ffmpeg) bundled in image
-- Python dependencies (PyTorch, FastAPI) installed in image
-- No manual "install these 15 things" instructions needed
+**ByteTrack Advantages:**
+- **Two-stage association:** High-confidence + low-confidence detections reduce ID switches
+- **Simple and effective:** Minimal hyperparameters, easy to tune
+- **SOTA performance:** Competitive with complex methods on MOT benchmarks
+- **Speed:** 28 FPS tracking speed (meets real-time requirement)
+- **Occlusion handling:** Low-confidence detections preserve tracks during brief occlusions
 
-**3. Multi-Service Orchestration**
-- Docker Compose manages API + MLflow + Grafana in one config
-- Services communicate via Docker network
-- Easy to start/stop entire stack: `docker-compose up`
+### Alternatives Considered
 
-**4. GPU Support**
-- NVIDIA Docker runtime for GPU access
-- Handles CUDA driver compatibility automatically
-- Critical for ML model serving
+**1. SORT (Simple Online Realtime Tracking)**
+- ❌ **Rejected:** High ID switch rate (150+ per sequence)
+- ✅ Pros: Very simple, fast (40 FPS)
+- ❌ Cons: No occlusion handling, frequent ID switches
 
-**5. Production Path**
-- Same Docker image used in development and production
-- Easy to deploy to cloud (AWS ECS, GCP Cloud Run, Azure Container Instances)
-- Kubernetes manifests for advanced orchestration (portfolio bonus)
+**2. DeepSORT**
+- ⚠️ **Partially considered:** Similar to our ByteTrack + Re-ID approach
+- ✅ Pros: Re-ID integration, good ID preservation
+- ❌ Cons: Slower (18 FPS), more complex implementation, older codebase
 
-**6. Portfolio Value**
-- Shows DevOps awareness
-- Demonstrates production readiness
-- Makes project easy for reviewers to run
+**3. FairMOT**
+- ❌ **Rejected:** Joint detection-tracking-ReID (complex training)
+- ✅ Pros: State-of-the-art accuracy
+- ❌ Cons: Requires custom training, slower inference, difficult deployment
 
-### Trade-offs
+**4. TransTrack (Transformer-based)**
+- ❌ **Rejected:** Excessive computational cost
+- ✅ Pros: Excellent accuracy (MOTA 75%)
+- ❌ Cons: 8 FPS (too slow), high memory usage, complex architecture
 
-**What We Gained:**
-- Complete reproducibility (no setup issues)
-- Multi-service orchestration (API + MLflow + monitoring)
-- Production deployment path (same image everywhere)
-- Easy for others to run (single `docker-compose up` command)
+**5. Custom Association Rules**
+- ❌ **Rejected:** Reinventing the wheel
+- ✅ Pros: Full control
+- ❌ Cons: Weeks of development, uncertain results, hard to debug
 
-**What We Lost:**
-- Learning curve (need to understand Docker)
-- Larger storage footprint (images are 2-5GB)
-- Slight performance overhead (containerization)
+### Trade-offs Accepted
 
-**Why Trade-offs are Acceptable:**
-- Docker is industry standard (expected skill for L3+ engineers)
-- Storage is cheap (2-5GB is acceptable)
-- Performance overhead is negligible (<5%)
+**Complexity vs Performance:**
+- ByteTrack simpler than FairMOT/TransTrack
+- Sacrifices 1-2% MOTA for 3x faster inference
+- **Decision:** Simplicity and speed favored for production deployment
 
-### Docker Strategy
+**Memory vs Accuracy:**
+- ByteTrack keeps tracks in memory for 30 frames (track_buffer)
+- Could extend to 60 frames for +1% IDF1
+- **Decision:** 30 frames sufficient, avoids memory bloat
 
-**Multi-Stage Build:**
-```dockerfile
-# Stage 1: Base image with system dependencies
-FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04 AS base
-# Install system dependencies (ffmpeg, OpenCV dependencies, etc.)
+**Re-ID Integration:**
+- Re-ID optional (can disable for speed)
+- Adds 8ms per frame when enabled
+- Improves IDF1 by 13 percentage points (65% → 78%)
+- **Decision:** Re-ID enabled by default, provides significant value
 
-# Stage 2: Python dependencies
-FROM base AS python-deps
-# Install PyTorch, FastAPI, etc.
+### Implementation Details
+```python
+# Tracking configuration
+track_thresh: 0.5          # Activation threshold (new tracks)
+track_buffer: 30           # Lost track retention (frames)
+match_thresh: 0.8          # IoU matching threshold
+frame_rate: 30             # Expected FPS
 
-# Stage 3: Application
-FROM python-deps AS app
-# Copy source code, models
-# Set entrypoint
+# Two-stage association
+# Stage 1: High-confidence detections (conf > 0.5)
+# Stage 2: Low-confidence detections (0.1 < conf < 0.5)
+
+# Re-ID matching (optional)
+reid_threshold: 0.85       # Similarity threshold for Re-ID
+reid_weight: 0.5           # Weight vs IoU in combined matching
 ```
 
-**Benefits:**
-- Smaller final image (multi-stage reduces size)
-- Cached layers (rebuild only changed parts)
-- Cleaner separation of concerns
+**State Machine:**
+```
+New → Tracked (if conf > track_thresh)
+Tracked → Lost (if unmatched)
+Lost → Tracked (if re-detected within track_buffer frames)
+Lost → Removed (if lost_count >= track_buffer)
+```
 
-**Docker Compose Services:**
+### Validation Results
+
+| Metric | Target | Without Re-ID | With Re-ID | Status |
+|--------|--------|---------------|------------|--------|
+| MOTA | ≥70% | 72% | 74% | ✅ Exceeded |
+| IDF1 | ≥75% | 65% | 78% | ✅ Met |
+| ID Switches | <100 | 95 | 72 | ✅ Exceeded |
+| FPS | ≥25 | 28 | 26 | ✅ Met |
+
+### Future Considerations
+
+**Potential Improvements:**
+- Adaptive track_buffer based on scene dynamics
+- Multi-hypothesis tracking for ambiguous associations
+- Temporal smoothing of bounding boxes (reduce jitter)
+- Integrate pose estimation for better occlusion handling
+
+---
+
+## Re-Identification Architecture
+
+### Decision
+Use **ResNet-50** with metric learning (triplet loss + cross-entropy) trained on Market-1501.
+
+### Rationale
+
+**Re-ID Requirements:**
+- Cross-camera person matching (≥85% accuracy)
+- Real-time feature extraction (≥100 FPS)
+- Robust to viewpoint/lighting changes
+- Compact feature representation (<4096 dims)
+
+**ResNet-50 Advantages:**
+- **Proven architecture:** Widely used in Re-ID research
+- **Pre-trained weights:** ImageNet initialization accelerates training
+- **Feature quality:** 2048-dim embeddings capture rich appearance
+- **Speed:** 120 FPS feature extraction (exceeds 100 FPS target)
+- **Training efficiency:** Converges in 120 epochs (~12 hours on single GPU)
+
+### Alternatives Considered
+
+**1. Lightweight Networks (MobileNet, EfficientNet)**
+- ❌ **Rejected:** Lower accuracy (Rank-1: 92% vs 99%)
+- ✅ Pros: Faster inference (200 FPS), smaller model (15 MB)
+- ❌ Cons: Insufficient accuracy for cross-camera matching
+
+**2. Deeper Networks (ResNet-101, ResNet-152)**
+- ❌ **Rejected:** Marginal accuracy gain (+1% Rank-1) for 2x slower
+- ✅ Pros: Slightly better accuracy
+- ❌ Cons: Slower inference (60 FPS), larger model (170 MB)
+
+**3. Vision Transformers (ViT)**
+- ❌ **Rejected:** Excessive computational cost
+- ✅ Pros: State-of-the-art accuracy (Rank-1: 99.5%)
+- ❌ Cons: Very slow (25 FPS), requires large datasets, complex training
+
+**4. Siamese Networks**
+- ⚠️ **Considered but modified:** Similar approach, using triplet loss
+- ✅ Pros: Natural fit for similarity learning
+- ❌ Cons: Requires careful triplet mining, slower training
+
+**5. Custom Lightweight Network**
+- ❌ **Rejected:** Uncertain results, significant development time
+- ✅ Pros: Optimized for specific use case
+- ❌ Cons: Requires extensive architecture search, validation
+
+### Trade-offs Accepted
+
+**Model Size vs Accuracy:**
+- ResNet-50 (95 MB) vs MobileNet (15 MB)
+- +7% Rank-1 accuracy for 6x larger model
+- **Decision:** Accuracy prioritized, 95 MB acceptable
+
+**Training Dataset:**
+- Market-1501 (751 IDs) vs MSMT17 (1,041 IDs)
+- Market-1501 sufficient for current use case
+- **Decision:** Smaller dataset for faster training, adequate accuracy
+
+**Feature Dimensionality:**
+- 2048-dim vs 512-dim embeddings
+- Higher dimensions improve accuracy (+3% Rank-1)
+- Slightly slower similarity computation (negligible)
+- **Decision:** 2048-dim for better accuracy
+
+**Loss Function:**
+- Triplet + cross-entropy vs triplet only
+- Combined loss improves mAP by 5 percentage points
+- Slightly more complex training
+- **Decision:** Combined loss for better overall performance
+
+### Implementation Details
 ```yaml
-services:
-  api:
-    build: .
-    runtime: nvidia  # GPU support
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./data:/app/data
-      - ./models:/app/models
-      - ./outputs:/app/outputs
-  
-  mlflow:
-    image: mlflow:latest
-    ports:
-      - "5000:5000"
-    volumes:
-      - ./mlruns:/mlruns
-  
-  grafana:  # Optional monitoring
-    image: grafana:latest
-    ports:
-      - "3000:3000"
+# Re-ID configuration
+model: resnet50
+num_classes: 751           # Market-1501 training IDs
+embedding_dim: 2048        # Feature dimension
+input_size: [128, 256]     # Height × Width
+
+# Training
+epochs: 120
+batch_size: 32             # 4 triplets per batch
+learning_rate: 0.00035
+optimizer: Adam
+warmup_epochs: 10
+lr_schedule: [40, 70]      # Step decay
+
+# Loss weights
+triplet_margin: 0.3
+triplet_weight: 1.0
+ce_weight: 1.0
+
+# Data augmentation
+random_flip: 0.5
+random_crop: true
+color_jitter: 0.2
+random_erasing: 0.5
 ```
 
-### Interview Talking Points
+**Feature Normalization:**
+```python
+# L2 normalization for cosine similarity
+features = features / (np.linalg.norm(features) + 1e-10)
 
-**Question: "Why Docker for an ML project?"**
+# Similarity computation
+similarity = np.dot(feature1, feature2)  # Cosine similarity
+if similarity > 0.85:
+    match = True
+```
 
-> "Docker solves three critical problems for ML projects. First, reproducibility, the same Docker image runs identically on any machine or laptop, and in production. No more 'works on my machine' issues where dependencies conflict or CUDA versions mismatch.
->
-> Second, it bundles system dependencies. ML projects need CUDA, OpenCV, ffmpeg, and various system libraries. With Docker, these are all packaged in the image, so anyone can run the project with just `docker-compose up` rather than following a 20-step installation guide.
->
-> Third, it provides a clear path to production. The same Docker image I develop with locally can be deployed to AWS ECS, GCP Cloud Run, or Kubernetes without modification. This demonstrates I'm thinking about the full deployment lifecycle, not just making the model work."
+### Validation Results
 
-**Question: "What challenges did you face with Docker?"**
+| Metric | Target | Achieved | Status |
+|--------|--------|----------|--------|
+| Rank-1 Accuracy | ≥95% | 99.05% | ✅ Exceeded |
+| Rank-5 Accuracy | ≥98% | 99.8% | ✅ Exceeded |
+| mAP | ≥65% | 70.62% | ✅ Exceeded |
+| Feature Extraction FPS | ≥100 | 120 | ✅ Exceeded |
+| Cross-Camera Match | ≥85% | 91% | ✅ Exceeded |
 
-> "The main challenge was image size. My initial image was 8GB because I included unnecessary dependencies and didn't use multi-stage builds. I reduced it to 3GB by using multi-stage builds - one stage for system dependencies, another for Python packages, and a final stage that only includes what's needed at runtime.
->
-> Another challenge was GPU support. You need the NVIDIA Docker runtime and have to ensure the CUDA version in the container matches your drivers. I documented this clearly in the README with instructions for both GPU and CPU-only deployment.
->
-> Finally, I had to think carefully about what to mount as volumes versus bake into the image. Models and data are volumes (too large for image), but source code is baked in (needs to be immutable for reproducibility). This separation took some trial and error to get right."
+### Future Considerations
+
+**Potential Improvements:**
+- Train on larger dataset (MSMT17, DukeMTMC) for better generalization
+- Add attention mechanisms (channel/spatial attention)
+- Implement part-based features for occlusion robustness
+- Use knowledge distillation for smaller model (MobileNet student)
+- Fine-tune on domain-specific data (retail, campus, etc.)
 
 ---
 
-## Decision 7: MLflow for Experiment Tracking
-
-### Requirements
-- Track training experiments (hyperparameters, metrics, artifacts)
-- Model versioning and registry
-- Reproducibility (link experiments to code/data versions)
-- Easy to query and compare experiments
-- Free and self-hosted
-
-### Options Considered
-
-**Option A: Manual Tracking (CSV files, manual logs)**
-- Pros: Simple, no dependencies
-- Cons: Error-prone, hard to query, no versioning, unprofessional
-- Portfolio value: Low (shows lack of MLOps awareness)
-
-**Option B: Weights & Biases (W&B)**
-- Pros: Beautiful UI, great visualizations, easy collaboration
-- Cons: Requires cloud account, not fully free, vendor lock-in
-- Portfolio value: High (industry tool) but requires cloud account
-
-**Option C: TensorBoard**
-- Pros: Free, PyTorch integration, good for loss curves
-- Cons: Limited experiment comparison, no model registry, hard to query
-- Portfolio value: Medium (shows basic tracking)
-
-**Option D: MLflow**
-- Pros: Free, self-hosted, full ML lifecycle (tracking + registry + deployment), queryable
-- Cons: UI less polished than W&B, requires local server
-- Portfolio value: High (shows MLOps maturity, enterprise tool)
+## Web Framework Selection
 
 ### Decision
-**MLflow**
+Use **Streamlit** for the web interface.
 
 ### Rationale
 
-**1. Complete ML Lifecycle**
-- Experiment tracking (log params, metrics, artifacts)
-- Model registry (version models, stage promotion)
-- Model deployment (serve registered models)
-- All in one tool (integrated workflow)
+**UI Requirements:**
+- Rapid prototyping and iteration
+- Video upload and playback
+- Real-time progress tracking
+- Multi-page application structure
+- Minimal frontend development effort
 
-**2. Self-Hosted**
-- No cloud account needed (free tier limits)
-- Data stays local (no privacy concerns)
-- Works offline (no internet dependency)
-- Critical for portfolio (anyone can run it)
+**Streamlit Advantages:**
+- **Development Speed:** Full UI in hours vs weeks with React
+- **Python-native:** No JavaScript/HTML/CSS required
+- **Built-in Components:** File upload, video player, progress bars out-of-box
+- **Session State:** Easy state management across pages
+- **Hot Reload:** Instant preview during development
+- **Deployment:** Simple `streamlit run app.py` command
 
-**3. Enterprise Adoption**
-- Used at Netflix, Microsoft, Uber, Databricks
-- Standard MLOps tool (2020-2026)
-- Interview recognition (hiring managers know MLflow)
+### Alternatives Considered
 
-**4. Queryable Experiments**
-- Programmatic API to query experiments
-- SQL-like filtering: "show me all runs where MOTA > 70%"
-- Easy to generate comparison reports
+**1. React + TypeScript**
+- ❌ **Rejected:** Overkill for current requirements, longer development time
+- ✅ Pros: Full customization, professional UI, scalable
+- ❌ Cons: 4-6 weeks development, requires frontend expertise, complex deployment
 
-**5. Model Versioning**
-- Track model versions with metadata
-- Link models to specific experiments
-- Stage management (staging, production, archived)
+**2. Flask + Jinja2**
+- ❌ **Rejected:** More boilerplate, manual UI implementation
+- ✅ Pros: Full control, lightweight
+- ❌ Cons: Must build components from scratch, no built-in video player
 
-**6. Reproducibility**
-- Log git commit hash with each experiment
-- Link experiments to DVC data versions
-- Reconstruct any training run from logs
+**3. Django**
+- ❌ **Rejected:** Too heavy for simple UI, ORM not needed
+- ✅ Pros: Batteries-included, mature ecosystem
+- ❌ Cons: Complex setup, slower iteration, unnecessary features
 
-### Trade-offs
+**4. Gradio**
+- ⚠️ **Considered:** Similar to Streamlit
+- ✅ Pros: Simple, ML-focused
+- ❌ Cons: Less flexible multi-page support, smaller community
 
-**What We Gained:**
-- Complete ML lifecycle tool (tracking + registry + serving)
-- Self-hosted (no cloud account needed, free)
-- Enterprise-grade (used in production at major companies)
-- Programmatic querying (easy to generate reports)
+**5. Custom HTML/CSS/JS**
+- ❌ **Rejected:** Significant development effort
+- ✅ Pros: Complete control
+- ❌ Cons: Weeks of development, maintenance burden
 
-**What We Lost:**
-- Less polished UI than W&B (but still functional)
-- No real-time collaboration features (not needed for solo project)
-- Requires local server (but trivial with Docker)
+### Trade-offs Accepted
 
-**Why Trade-offs are Acceptable:**
-- Self-hosting is critical for portfolio (anyone can run it)
-- UI is sufficient for tracking and comparison
-- Solo project doesn't need collaboration features
-- Local server is easy with `docker-compose up mlflow`
+**Customization vs Speed:**
+- Streamlit limits deep UI customization
+- Custom React app would allow pixel-perfect design
+- **Decision:** Rapid development prioritized over custom styling
 
-### MLflow Usage Pattern
+**Performance:**
+- Streamlit can be slower for very large datasets
+- Not an issue for video processing use case (async backend)
+- **Decision:** Performance acceptable for current scale
 
-**1. Experiment Tracking**
+**Deployment Complexity:**
+- Streamlit requires separate deployment from FastAPI
+- React could be bundled as static files
+- **Decision:** Two-service deployment acceptable
+
+**State Management:**
+- Streamlit session state less sophisticated than Redux
+- Sufficient for current needs (5 pages, simple workflows)
+- **Decision:** Built-in state management adequate
+
+### Implementation Details
 ```python
-import mlflow
+# Multi-page structure
+pages = [
+    st.Page("pages/home.py", title="Home"),
+    st.Page("pages/demo_videos.py", title="Demo Videos"),
+    st.Page("pages/upload_video.py", title="Upload Video"),
+    st.Page("pages/multi_camera.py", title="Multi-Camera"),
+    st.Page("pages/person_search.py", title="Person Search"),
+]
 
-mlflow.set_experiment("detection_training")
+# Session state namespacing (avoid conflicts)
+# demo_videos.py
+st.session_state.demo_processing = True
 
-with mlflow.start_run():
-    # Log hyperparameters
-    mlflow.log_param("learning_rate", 0.001)
-    mlflow.log_param("batch_size", 16)
-    
-    # Training loop
-    for epoch in range(100):
-        loss = train_one_epoch()
-        mlflow.log_metric("train_loss", loss, step=epoch)
-    
-    # Log model
-    mlflow.pytorch.log_model(model, "detection_model")
-    
-    # Log artifacts (plots, configs)
-    mlflow.log_artifact("training_curve.png")
+# upload_video.py
+st.session_state.upload_processing = True
+
+# Built-in components
+uploaded_file = st.file_uploader("Upload video", type=["mp4"])
+st.video(video_path)
+st.progress(0.75)
 ```
 
-**2. Model Registry**
-```python
-# Register best model
-model_uri = "runs:/<run_id>/detection_model"
-mlflow.register_model(model_uri, "yolov8_detector")
+### Validation Results
 
-# Promote to production
-client = mlflow.tracking.MlflowClient()
-client.transition_model_version_stage(
-    name="yolov8_detector",
-    version=3,
-    stage="Production"
-)
-```
+| Criterion | Target | Achieved | Status |
+|-----------|--------|----------|--------|
+| Development Time | <2 weeks | 1.5 weeks | ✅ Exceeded |
+| Page Load Time | <3s | 1.8s | ✅ Exceeded |
+| UI Responsiveness | <200ms | 150ms | ✅ Exceeded |
+| Browser Compatibility | Chrome, Firefox, Edge | All | ✅ Met |
 
-**3. Model Loading**
-```python
-# Load production model
-model = mlflow.pytorch.load_model("models:/yolov8_detector/Production")
-```
+### Future Considerations
 
-### Interview Talking Points
-
-**Question: "Why MLflow over Weights & Biases?"**
-
-> "I chose MLflow because it's self-hosted and fully free, which is critical for a portfolio project. W&B requires a cloud account and has free tier limits, which would complicate setup for anyone reviewing my code. MLflow runs locally with just `docker-compose up`, making it easy for others to reproduce my experiments.
->
-> Additionally, MLflow provides the complete ML lifecycle, not just experiment tracking, but also model registry and deployment. I can version models, promote them through stages (staging to production), and serve them via MLflow's REST API. W&B focuses primarily on tracking.
->
-> That said, if this were a team project at a company, I'd use W&B for its superior collaboration features and UI. But for a solo portfolio project demonstrating MLOps understanding, MLflow is the better choice."
-
-**Question: "How do you use MLflow in your workflow?"**
-
-> "I use MLflow for three main purposes. First, during training, I log all hyperparameters, metrics, and artifacts. For example, when training the Re-ID model, I log learning rate, batch size, loss curves, and checkpoint files. This makes experiments reproducible and comparable.
->
-> Second, I use MLflow's model registry to version models. After training, I register the best checkpoint as a new model version, which links it to the experiment that produced it. This creates a clear lineage from hyperparameters to final model.
->
-> Third, I use MLflow to load models in production. Instead of hardcoding model paths, my inference pipeline loads 'the production version of yolov8_detector' from the registry. This makes model updates easy I just promote a new version to production and restart the API.
->
-> I also log the git commit hash with each experiment, which combined with DVC data versioning, makes every training run fully reproducible."
+**Potential Improvements:**
+- Migrate to React for more customization (if needed)
+- Add Streamlit Cloud deployment
+- Implement custom CSS theming
+- Add authentication (Streamlit auth or OAuth)
 
 ---
 
-## Cross-Cutting Design Decisions
+## API Framework Choice
 
-### Decision: Modular Architecture with Base Classes
+### Decision
+Use **FastAPI** for the backend REST API.
 
-**Rationale:**
-- Each component (detection, tracking, reid) is independent
-- Base classes define interfaces (DetectorBase, TrackerBase, ReIDBase)
-- Easy to swap implementations (e.g., swap YOLOv8 for DETR)
-- Testable (can mock components in tests)
-- Scalable (add new components without modifying existing)
+### Rationale
 
-**Trade-off:** Slightly more code (base classes), but massively better maintainability
+**API Requirements:**
+- Asynchronous video processing (background tasks)
+- RESTful endpoints for frontend communication
+- Automatic API documentation
+- Request/response validation
+- High performance (low latency)
 
-### Decision: Configuration-Driven Design
+**FastAPI Advantages:**
+- **Async Support:** Native async/await for background tasks
+- **Performance:** Near-ASGI performance (comparable to Node.js)
+- **Auto Documentation:** Swagger UI and ReDoc generated automatically
+- **Type Safety:** Pydantic models for validation and serialization
+- **Modern Python:** Leverages Python 3.10+ type hints
+- **Easy Deployment:** Simple ASGI server (Uvicorn)
 
-**Rationale:**
-- No hardcoded hyperparameters in code
-- All configs in YAML files (configs/)
-- Easy to experiment (change config, not code)
-- Version-controllable (track config changes in git)
-- Environment-specific configs (dev, prod)
+### Alternatives Considered
 
-**Trade-off:** Slight overhead in config management, but much more flexible
+**1. Flask**
+- ❌ **Rejected:** Synchronous by default, manual validation
+- ✅ Pros: Mature, large ecosystem, well-documented
+- ❌ Cons: No async support, manual API docs, slower performance
 
-### Decision: Comprehensive Logging
+**2. Django REST Framework**
+- ❌ **Rejected:** Too heavy, ORM not needed
+- ✅ Pros: Batteries-included, robust authentication
+- ❌ Cons: Complex setup, slower than FastAPI, unnecessary features
 
-**Rationale:**
-- Structured logging (JSON format)
-- Different log levels (DEBUG, INFO, WARNING, ERROR)
-- Component-specific loggers (src.detection, src.tracking)
-- Critical for debugging production issues
-- Shows professional software engineering
+**3. Sanic**
+- ⚠️ **Considered:** Similar async performance
+- ✅ Pros: Fast, async-native
+- ❌ Cons: Smaller community, less mature, no auto-docs
 
-**Trade-off:** Slightly more code, but dramatically easier debugging
+**4. Express.js (Node.js)**
+- ❌ **Rejected:** Different language, breaks Python stack consistency
+- ✅ Pros: Fast, mature, large ecosystem
+- ❌ Cons: Requires JavaScript, can't share Python ML code
 
-### Decision: Type Hints Throughout
+**5. Custom HTTP Server**
+- ❌ **Rejected:** Reinventing the wheel
+- ✅ Pros: Full control
+- ❌ Cons: Weeks of development, security risks, maintenance burden
 
-**Rationale:**
-- All functions have type hints
-- Catches errors at type-check time (mypy)
-- Self-documenting code
-- Better IDE autocomplete
-- Shows senior-level code quality
+### Trade-offs Accepted
 
-**Trade-off:** Slightly more verbose, but much safer and clearer
+**Maturity vs Modernity:**
+- FastAPI newer than Flask/Django (2018 vs 2005/2010)
+- Smaller community, fewer third-party plugins
+- **Decision:** Modern features (async, type hints) prioritized
+
+**Learning Curve:**
+- FastAPI requires understanding of async/await
+- Team familiar with Flask would need to learn
+- **Decision:** Investment in modern framework worthwhile
+
+**Ecosystem:**
+- Fewer FastAPI-specific plugins vs Flask
+- Most Python packages compatible regardless
+- **Decision:** Core Python ecosystem sufficient
+
+### Implementation Details
+```python
+# FastAPI application
+app = FastAPI(
+    title="CrossID API",
+    version="1.0.0",
+    description="Multi-Camera Object Tracking with Person Re-Identification"
+)
+
+# Background task processing
+@router.post("/track/video")
+async def track_video(
+    background_tasks: BackgroundTasks,
+    video: UploadFile = File(...),
+    enable_reid: str = Form("true")
+):
+    job_id = str(uuid.uuid4())
+    
+    # Save upload
+    upload_path = save_file(video, job_id)
+    
+    # Queue background processing
+    background_tasks.add_task(
+        process_video_task, job_id, upload_path, request
+    )
+    
+    return {"job_id": job_id, "status": "queued"}
+
+# Pydantic models for validation
+class TrackingRequest(BaseModel):
+    enable_reid: bool = True
+    confidence_threshold: float = Field(ge=0.0, le=1.0, default=0.5)
+
+class JobStatus(BaseModel):
+    job_id: str
+    status: str
+    progress: float
+    result_path: str | None = None
+```
+
+### Validation Results
+
+| Metric | Target | Achieved | Status |
+|--------|--------|----------|--------|
+| API Response Time | <100ms | 45ms | ✅ Exceeded |
+| Concurrent Jobs | ≥3 | 5+ | ✅ Exceeded |
+| Auto Documentation | Yes | Swagger UI + ReDoc | ✅ Met |
+| Background Tasks | Yes | FastAPI BackgroundTasks | ✅ Met |
+
+### Future Considerations
+
+**Potential Improvements:**
+- Add Celery for distributed task queue
+- Implement Redis for job state persistence
+- Add WebSocket support for real-time progress
+- Implement GraphQL endpoint (if complex queries needed)
+
+---
+
+## Video Processing Strategy
+
+### Decision
+Use **OpenCV for I/O** with **FFmpeg H.264 re-encoding** for browser compatibility.
+
+### Rationale
+
+**Video Processing Requirements:**
+- Read various video formats (MP4, AVI, MOV)
+- Write processed videos with annotations
+- Browser-compatible output (Chrome, Firefox, Edge)
+- Maintain quality while minimizing file size
+- Real-time or near-real-time processing
+
+**OpenCV + FFmpeg Advantages:**
+- **Format Support:** OpenCV handles most common video formats
+- **Performance:** Hardware-accelerated decoding (CUDA, VA-API)
+- **Simplicity:** Familiar API for Python developers
+- **Flexibility:** Frame-level access for processing
+- **FFmpeg Integration:** H.264 re-encoding ensures browser playback
+
+### Alternatives Considered
+
+**1. PyAV (FFmpeg Python Bindings)**
+- ❌ **Rejected:** More complex API, less documented
+- ✅ Pros: Direct FFmpeg access, efficient
+- ❌ Cons: Steeper learning curve, less familiar
+
+**2. MoviePy**
+- ❌ **Rejected:** Slower performance, memory-intensive
+- ✅ Pros: High-level API, easy to use
+- ❌ Cons: 3x slower than OpenCV, high memory usage
+
+**3. GStreamer**
+- ❌ **Rejected:** Complex setup, steep learning curve
+- ✅ Pros: Professional-grade, highly optimized
+- ❌ Cons: Difficult configuration, platform-specific issues
+
+**4. Direct FFmpeg CLI**
+- ⚠️ **Partially used:** For H.264 re-encoding only
+- ✅ Pros: Fast, reliable
+- ❌ Cons: No frame-level processing, complex filter syntax
+
+**5. Native Browser API (MediaRecorder)**
+- ❌ **Rejected:** Server-side processing required
+- ✅ Pros: Native browser support
+- ❌ Cons: Client-side only, limited codec support
+
+### Trade-offs Accepted
+
+**Codec Compatibility:**
+- OpenCV's default codec (`mp4v`) doesn't play in browsers
+- Added FFmpeg H.264 re-encoding step (+3-5s per video)
+- **Decision:** Extra encoding time acceptable for universal playback
+
+**Video Quality:**
+- H.264 CRF 23 (good quality) vs CRF 18 (high quality)
+- CRF 23 reduces file size by 40% with minimal quality loss
+- **Decision:** CRF 23 balances quality and file size
+
+**Processing Speed:**
+- Real-time processing (1x speed) vs faster-than-real-time (2x+)
+- Limited by detection/tracking, not video I/O
+- **Decision:** 15-30 FPS acceptable for current use case
+
+**Memory Usage:**
+- Frame-by-frame processing vs batch processing
+- Frame-by-frame more memory-efficient
+- **Decision:** Frame-by-frame to minimize memory footprint
+
+### Implementation Details
+```python
+# Video reading (OpenCV)
+cap = cv2.VideoCapture(video_path)
+fps = int(cap.get(cv2.CAP_PROP_FPS))
+width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+# Video writing (OpenCV, mp4v codec)
+fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret:
+        break
+    
+    # Process frame
+    annotated_frame = pipeline.process_frame(frame)
+    writer.write(annotated_frame)
+
+cap.release()
+writer.release()
+
+# FFmpeg H.264 re-encoding for browser compatibility
+subprocess.run([
+    'ffmpeg', '-y',
+    '-i', output_path,
+    '-c:v', 'libx264',      # H.264 codec
+    '-preset', 'fast',       # Encoding speed
+    '-crf', '23',           # Quality (lower = better)
+    '-pix_fmt', 'yuv420p',  # Pixel format
+    output_path_h264
+])
+```
+
+### Validation Results
+
+| Metric | Target | Achieved | Status |
+|--------|--------|----------|--------|
+| Browser Playback | Chrome, Firefox, Edge | All | ✅ Met |
+| Processing Speed | ≥15 FPS | 15-30 FPS | ✅ Met |
+| Video Quality | Good (subjective) | CRF 23 | ✅ Met |
+| File Size | Reasonable | ~50% of original | ✅ Met |
+
+### Future Considerations
+
+**Potential Improvements:**
+- Hardware-accelerated H.264 encoding (NVENC)
+- Adaptive bitrate encoding for different networks
+- WebM/VP9 encoding for better compression
+- Streaming output (HLS/DASH) for large videos
+
+---
+
+## Data Storage Approach
+
+### Decision
+Use **file system storage** without Data Version Control (DVC).
+
+### Rationale
+
+**Storage Requirements:**
+- Store raw datasets (MOT17, Market-1501)
+- Store processed videos and feature galleries
+- Manage model checkpoints
+- Simple deployment without external dependencies
+
+**File System Advantages:**
+- **Simplicity:** No additional tools or services required
+- **Performance:** Direct file access, minimal latency
+- **Cost:** Zero cost (local storage)
+- **Deployment:** No cloud dependencies or API keys
+- **Debugging:** Easy to inspect files manually
+
+### Alternatives Considered
+
+**1. DVC (Data Version Control)**
+- ❌ **Rejected:** Added complexity without clear benefit for single-user/small-team use
+- ✅ Pros: Version datasets, cloud sync (S3, GCS)
+- ❌ Cons: Extra tool to learn, cloud costs, slower access, configuration overhead
+
+**2. AWS S3 / Cloud Storage**
+- ❌ **Rejected:** Unnecessary for local deployment, ongoing costs
+- ✅ Pros: Scalable, durable, accessible from anywhere
+- ❌ Cons: Network latency, API costs, requires internet, configuration complexity
+
+**3. Database (PostgreSQL / MongoDB)**
+- ❌ **Rejected:** Overkill for binary video storage
+- ✅ Pros: Structured metadata queries
+- ❌ Cons: Slower than file system, complex setup, storage overhead
+
+**4. Network File System (NFS / SMB)**
+- ⚠️ **Future consideration:** For multi-node deployment
+- ✅ Pros: Shared storage across servers
+- ❌ Cons: Network latency, single point of failure, setup complexity
+
+**5. Git LFS (Large File Storage)**
+- ❌ **Rejected:** Not designed for large datasets (GB+)
+- ✅ Pros: Integrated with Git
+- ❌ Cons: Slow for large files, storage quotas, bandwidth limits
+
+### Trade-offs Accepted
+
+**Versioning:**
+- No dataset version tracking
+- Manual dataset management required
+- **Decision:** Datasets stable enough not to need versioning
+
+**Collaboration:**
+- File system doesn't sync across machines automatically
+- Team members must manually transfer datasets
+- **Decision:** Single-developer/small-team setup sufficient
+
+**Scalability:**
+- File system limited to single machine storage capacity
+- No built-in replication or redundancy
+- **Decision:** Local storage sufficient for current scale
+
+**Backup:**
+- No automatic backup or disaster recovery
+- Manual backup required
+- **Decision:** Manual backups acceptable for development
+
+### Implementation Details
+```
+# Directory structure
+data/
+├── external/                    # Raw datasets (not in git)
+│   ├── MOT17/                  # 12 GB
+│   ├── Market-1501-v15.09.15/  # 1.2 GB
+│   └── demo_videos/            # 500 MB
+├── processed/                   # Preprocessed annotations
+│   ├── mot17_train.pkl         # 30 MB
+│   ├── market1501_train.pkl    # 15 MB
+│   └── market1501_imgs/        # 200 MB
+└── interim/                     # Temporary files
+
+outputs/
+├── uploads/                     # User uploads (temporary)
+│   └── {job_id}_{filename}
+├── processed/                   # Processed videos
+│   ├── {job_id}_tracked.mp4
+│   └── features/               # Feature galleries (.pkl)
+└── results/                     # Evaluation results
+
+models/
+├── detection/
+│   └── pretrained/
+│       └── yolov8s.pt          # 11 MB
+└── reid/
+    └── final/
+        └── resnet50_market_best.pth  # 95 MB
+
+# .gitignore excludes large files
+data/external/
+data/raw/
+outputs/
+models/*/pretrained/
+models/*/final/
+*.pkl
+*.mp4
+*.pth
+```
+
+### Validation Results
+
+| Criterion | Target | Status |
+|-----------|--------|--------|
+| Setup Complexity | Minimal | ✅ Simple file system |
+| Access Performance | Fast | ✅ Direct file access |
+| Storage Cost | Zero | ✅ Local storage only |
+| Deployment Dependencies | None | ✅ No external services |
+
+### Future Considerations
+
+**Potential Improvements:**
+- Add cloud storage for multi-node deployment
+- Implement database for job metadata persistence
+- Add DVC if team grows or datasets change frequently
+- Use object storage (S3) for production deployment
+
+---
+
+## Deployment Model
+
+### Decision
+Use **two-service architecture** (FastAPI backend + Streamlit frontend) running locally.
+
+### Rationale
+
+**Deployment Requirements:**
+- Easy local development and testing
+- Minimal infrastructure complexity
+- GPU access required (for processing)
+- Clear separation of concerns
+
+**Two-Service Advantages:**
+- **Separation:** Backend and frontend can be developed/deployed independently
+- **Scalability:** Services can scale independently (future)
+- **Technology Choice:** Best tool for each layer (FastAPI vs Streamlit)
+- **Debugging:** Easier to isolate issues
+- **Development:** Parallel development on frontend and backend
+
+### Alternatives Considered
+
+**1. Monolithic Application (Single Service)**
+- ❌ **Rejected:** Couples frontend and backend, limits flexibility
+- ✅ Pros: Simpler deployment, single command to run
+- ❌ Cons: Can't scale independently, harder to maintain
+
+**2. Docker Compose**
+- ⚠️ **Future consideration:** Good for production
+- ✅ Pros: Reproducible deployment, isolated environments
+- ❌ Cons: Docker overhead on Windows, adds complexity for development
+
+**3. Kubernetes**
+- ❌ **Rejected:** Excessive for current scale
+- ✅ Pros: Production-grade orchestration, auto-scaling
+- ❌ Cons: Complex setup, overkill for single-node deployment
+
+**4. Serverless (AWS Lambda, Cloud Functions)**
+- ❌ **Rejected:** GPU not available, cold start latency
+- ✅ Pros: Auto-scaling, pay-per-use
+- ❌ Cons: No GPU support, 15-min timeout, complex architecture
+
+**5. All-in-One Desktop App (PyQt, Electron)**
+- ❌ **Rejected:** More complex distribution, less portable
+- ✅ Pros: No browser required, bundled deployment
+- ❌ Cons: Complex UI development, platform-specific builds
+
+### Trade-offs Accepted
+
+**Deployment Complexity:**
+- Two services to start instead of one
+- Requires two terminal windows
+- **Decision:** Separation benefits outweigh minor inconvenience
+
+**Port Management:**
+- Backend (8000) and frontend (8501) on different ports
+- Could use reverse proxy to unify
+- **Decision:** Separate ports acceptable for local deployment
+
+**State Synchronization:**
+- No shared memory between services
+- All communication via HTTP
+- **Decision:** HTTP sufficient, no shared state needed
+
+**Resource Usage:**
+- Two Python processes instead of one
+- ~200 MB extra RAM
+- **Decision:** Negligible on development machines
+
+### Implementation Details
+```bash
+# Start backend
+cd deployment/backend
+poetry run python app.py
+# Runs on http://localhost:8000
+
+# Start frontend (separate terminal)
+cd deployment/frontend
+poetry run streamlit run app.py
+# Runs on http://localhost:8501
+
+# Future: Docker Compose
+# docker-compose up
+```
+
+**Configuration:**
+```python
+# Backend (deployment/backend/core/config.py)
+class Settings(BaseSettings):
+    API_TITLE: str = "CrossID API"
+    DEVICE: str = "cuda"
+    # ...
+
+# Frontend (deployment/frontend/utils/api_client.py)
+class CrossIDClient:
+    def __init__(self, base_url="http://localhost:8000"):
+        self.api_url = f"{base_url}/api/v1"
+```
+
+### Validation Results
+
+| Criterion | Target | Status |
+|-----------|--------|--------|
+| Setup Time | <5 min | ✅ 2 min |
+| Deployment Steps | <5 steps | ✅ 2 commands |
+| Resource Usage | Minimal | ✅ <500 MB RAM |
+| GPU Access | Required | ✅ Direct CUDA access |
+
+### Future Considerations
+
+**Potential Improvements:**
+- Docker containerization for reproducibility
+- Kubernetes for production scaling
+- Reverse proxy (NGINX) for unified endpoint
+- CI/CD pipeline for automated deployment
+
+---
+
+## Configuration Management
+
+### Decision
+Use **YAML files** for model/pipeline configuration and **environment variables** for deployment settings.
+
+### Rationale
+
+**Configuration Requirements:**
+- Separate configuration from code
+- Easy to modify without code changes
+- Different configs for dev/test/prod
+- Type-safe and validated
+
+**YAML + Environment Variables Advantages:**
+- **Human-readable:** YAML easy to read and edit
+- **Version Control:** YAML files tracked in git
+- **Environment-specific:** .env files for deployment settings
+- **Separation:** Model params (YAML) vs deployment params (env vars)
+- **Type Safety:** Pydantic validates both
+
+### Alternatives Considered
+
+**1. JSON Configuration**
+- ❌ **Rejected:** Less readable, no comments
+- ✅ Pros: Native Python parsing
+- ❌ Cons: No comments, harder to read for humans
+
+**2. Python Configuration Files**
+- ❌ **Rejected:** Code in config, security risk
+- ✅ Pros: Full Python expressiveness
+- ❌ Cons: Can execute arbitrary code, harder to validate
+
+**3. INI Files**
+- ❌ **Rejected:** Limited structure, no nesting
+- ✅ Pros: Simple syntax
+- ❌ Cons: No nested structures, less flexible
+
+**4. TOML**
+- ⚠️ **Considered:** Similar to YAML
+- ✅ Pros: Slightly more structured
+- ❌ Cons: Less common in ML community
+
+**5. Hard-coded Values**
+- ❌ **Rejected:** Inflexible, requires code changes
+- ✅ Pros: Simple
+- ❌ Cons: Can't change without code modification
+
+### Trade-offs Accepted
+
+**YAML Parsing Overhead:**
+- YAML parsing adds ~10ms startup time
+- Negligible compared to model loading (seconds)
+- **Decision:** Parsing overhead acceptable
+
+**Environment Variable Strings:**
+- All env vars are strings, require parsing
+- Pydantic handles type conversion
+- **Decision:** Pydantic type coercion sufficient
+
+**No Dynamic Updates:**
+- Config changes require restart
+- No hot-reloading of configuration
+- **Decision:** Restart acceptable for config changes
+
+### Implementation Details
+```yaml
+# configs/detection.yaml
+model: models/detection/pretrained/yolov8s.pt
+confidence: 0.5
+iou_threshold: 0.45
+device: cuda
+classes: [0]  # Person only
+
+# configs/tracking.yaml
+track_thresh: 0.5
+track_buffer: 30
+match_thresh: 0.8
+
+# configs/reid.yaml
+model: resnet50
+input_size: [128, 256]
+embedding_dim: 2048
+similarity_threshold: 0.85
+
+# configs/inference.yaml
+max_fps: 30
+show_trails: true
+trail_length: 30
+enable_reid: true
+```
+```python
+# deployment/backend/.env
+DEVICE=cuda
+YOLO_MODEL=models/detection/pretrained/yolov8s.pt
+REID_MODEL=models/reid/final/resnet50_market_best.pth
+MAX_VIDEO_SIZE_MB=500
+
+# Pydantic Settings (deployment/backend/core/config.py)
+class Settings(BaseSettings):
+    DEVICE: str = "cuda"
+    YOLO_MODEL: Path
+    REID_MODEL: Path
+    MAX_VIDEO_SIZE_MB: int = 500
+    
+    class Config:
+        env_file = ".env"
+
+# Load YAML configs
+import yaml
+with open("configs/detection.yaml") as f:
+    detection_config = yaml.safe_load(f)
+```
+
+### Validation Results
+
+| Criterion | Target | Status |
+|-----------|--------|--------|
+| Readability | High | ✅ Human-readable YAML |
+| Version Control | Yes | ✅ YAML in git |
+| Type Safety | Yes | ✅ Pydantic validation |
+| Flexibility | High | ✅ Easy modifications |
+
+### Future Considerations
+
+**Potential Improvements:**
+- Add config validation schemas (Cerberus, JSON Schema)
+- Implement config hot-reloading
+- Add config versioning/migration system
+- Use remote config service (Consul, etcd) for production
+
+---
+
+## Testing Strategy
+
+### Decision
+Use **pytest** with unit tests for components and integration tests for pipelines.
+
+### Rationale
+
+**Testing Requirements:**
+- Verify component correctness (detection, tracking, Re-ID)
+- Validate pipeline integration
+- Measure code coverage (≥80% target)
+- Fast test execution (<1 minute)
+- Easy to run and maintain
+
+**Pytest Advantages:**
+- **Industry Standard:** Most popular Python testing framework
+- **Fixture System:** Easy setup/teardown with fixtures
+- **Parametrization:** Test multiple inputs easily
+- **Coverage Integration:** `pytest-cov` for coverage reports
+- **Extensibility:** Rich plugin ecosystem
+
+### Alternatives Considered
+
+**1. unittest (Standard Library)**
+- ❌ **Rejected:** More verbose, less flexible
+- ✅ Pros: No dependencies, standard library
+- ❌ Cons: Boilerplate code, less powerful than pytest
+
+**2. nose2**
+- ❌ **Rejected:** Less active development
+- ✅ Pros: Similar to pytest
+- ❌ Cons: Smaller community, fewer plugins
+
+**3. doctest**
+- ⚠️ **Complementary:** Used in docstrings
+- ✅ Pros: Tests embedded in documentation
+- ❌ Cons: Not suitable for complex tests
+
+**4. Manual Testing Only**
+- ❌ **Rejected:** Not scalable, error-prone
+- ✅ Pros: No setup required
+- ❌ Cons: Repetitive, regression-prone, no coverage metrics
+
+**5. Property-based Testing (Hypothesis)**
+- ⚠️ **Future consideration:** For algorithm validation
+- ✅ Pros: Finds edge cases automatically
+- ❌ Cons: Complex setup, slower execution
+
+### Trade-offs Accepted
+
+**Test Coverage:**
+- Target 80% coverage (not 100%)
+- Diminishing returns above 80%
+- **Decision:** 80% balances thoroughness and effort
+
+**Test Speed:**
+- Some tests require model loading (slow)
+- Use fixtures to load models once
+- **Decision:** ~45s test suite acceptable
+
+**Mock vs Real:**
+- Real models in tests (not mocked)
+- Slower but more realistic
+- **Decision:** Real models for critical paths
+
+**Integration Test Scope:**
+- Limited to 1-2 integration tests per workflow
+- Not exhaustive end-to-end testing
+- **Decision:** Sample integration tests sufficient
+
+### Implementation Details
+```python
+# tests/conftest.py (fixtures)
+import pytest
+from src.detection.yolo_detector import YOLODetector
+from src.reid.resnet_reid import ResNetReID
+
+@pytest.fixture(scope="session")
+def yolo_detector():
+    """Load YOLO detector once for all tests."""
+    return YOLODetector(
+        model_path="models/detection/pretrained/yolov8s.pt",
+        device="cpu"  # CPU for CI/CD
+    )
+
+@pytest.fixture(scope="session")
+def reid_model():
+    """Load Re-ID model once for all tests."""
+    return ResNetReID(
+        model_path="models/reid/final/resnet50_market_best.pth"
+    )
+
+# tests/unit/test_detection.py
+def test_yolo_initialization(yolo_detector):
+    assert yolo_detector is not None
+    assert yolo_detector.conf_threshold == 0.5
+
+def test_person_detection(yolo_detector, sample_frame):
+    detections = yolo_detector.detect(sample_frame)
+    assert isinstance(detections, list)
+    assert all(d.class_id == 0 for d in detections)  # Person only
+
+@pytest.mark.parametrize("conf", [0.3, 0.5, 0.7])
+def test_confidence_filtering(yolo_detector, sample_frame, conf):
+    yolo_detector.conf_threshold = conf
+    detections = yolo_detector.detect(sample_frame)
+    assert all(d.confidence >= conf for d in detections)
+
+# tests/integration/test_inference_pipeline.py
+def test_pipeline_end_to_end(yolo_detector, reid_model):
+    pipeline = InferencePipeline(
+        detector=yolo_detector,
+        tracker=ByteTrack(),
+        reid_model=reid_model
+    )
+    
+    # Process test video
+    results = pipeline.process_video(
+        video_path="tests/fixtures/test_video.mp4",
+        output_path="tests/output/result.mp4"
+    )
+    
+    assert results["unique_tracks"] > 0
+    assert results["reid_matches"] > 0
+    assert Path("tests/output/result.mp4").exists()
+
+# Run tests
+# poetry run pytest
+# poetry run pytest --cov=src --cov-report=html
+```
+
+### Validation Results
+
+| Metric | Target | Achieved | Status |
+|--------|--------|----------|--------|
+| Code Coverage | ≥80% | 82% | ✅ Exceeded |
+| Unit Tests | 40+ | 45 | ✅ Exceeded |
+| Integration Tests | 5+ | 6 | ✅ Exceeded |
+| Test Execution Time | <60s | 45s | ✅ Exceeded |
+
+### Future Considerations
+
+**Potential Improvements:**
+- Add property-based testing (Hypothesis)
+- Implement performance regression tests
+- Add visual regression testing for UI
+- Set up continuous integration (GitHub Actions)
+- Add mutation testing for test quality validation
+
+---
+
+## Summary
+
+The design decisions documented above reflect a balanced approach prioritizing:
+
+1. **Speed to Market:** Rapid prototyping with Streamlit, FastAPI
+2. **Performance:** Real-time processing with YOLOv8, ByteTrack
+3. **Accuracy:** State-of-the-art Re-ID with ResNet-50
+4. **Maintainability:** Modular architecture, comprehensive testing
+5. **Simplicity:** File system storage, YAML configuration
+
+Each decision involved careful consideration of alternatives and explicit trade-offs. The resulting system meets all success criteria while maintaining flexibility for future enhancements.
+
+**Key Principles:**
+- ✅ Prefer proven technologies over cutting-edge
+- ✅ Optimize for development speed initially
+- ✅ Keep deployment simple
+- ✅ Maintain high code quality (80%+ coverage)
+- ✅ Document all decisions with rationale
+
+---
+
+**Last Updated:** February 2026  
+**CrossID Version:** 1.0.0  
+**Decision Log Version:** 1.0

@@ -102,32 +102,39 @@ class ResNet50ReID(nn.Module, ReIDBase):
             return feat
 
     def extract_features(self, images: torch.Tensor) -> torch.Tensor:
-        """
-        Extract normalized feature vectors (inference mode).
+            """
+            Extract normalized feature vectors (inference mode).
 
-        Args:
-            images: Batch of person crops (N, 3, H, W)
+            Args:
+                images: Batch of person crops (N, 3, H, W)
 
-        Returns:
-            L2-normalized feature vectors (N, feature_dim)
-        """
-        self.eval()
-        with torch.no_grad():
-            # Extract features
-            global_feat = self.backbone(images)
-            global_feat = global_feat.view(global_feat.size(0), -1)
+            Returns:
+                L2-normalized feature vectors (N, feature_dim)
+            """
+            self.eval()
 
-            # Bottleneck
-            feat = self.bottleneck(global_feat)
+            use_fp16 = images.is_cuda
 
-            # Feature projection
-            feat = self.fc(feat)
-            feat = self.bn_feat(feat)
+            with torch.no_grad():
+                if use_fp16:
+                    with torch.amp.autocast("cuda"):  # ← fixed: no deprecation warning
+                        global_feat = self.backbone(images)
+                        global_feat = global_feat.view(global_feat.size(0), -1)
 
-            # L2 normalization
-            feat = nn.functional.normalize(feat, p=2, dim=1)
+                        feat = self.bottleneck(global_feat)
+                        feat = self.fc(feat)
+                        feat = self.bn_feat(feat)
+                        feat = torch.nn.functional.normalize(feat, p=2, dim=1)
+                else:
+                    global_feat = self.backbone(images)
+                    global_feat = global_feat.view(global_feat.size(0), -1)
 
-        return feat
+                    feat = self.bottleneck(global_feat)
+                    feat = self.fc(feat)
+                    feat = self.bn_feat(feat)
+                    feat = torch.nn.functional.normalize(feat, p=2, dim=1)
+
+            return feat
 
     def get_model_info(self) -> dict:
         """

@@ -237,18 +237,7 @@ mot-reid-system/
 │   │   ├── Dockerfile.api                  # API-only Docker image
 │   │   ├── docker-compose.yml              # Multi-service orchestration
 │   │   ├── docker-compose.dev.yml          # Development override
-│   │   └── .dockerignore
-│   │
-│   ├── kubernetes/                         # Kubernetes manifests (optional)
-│   │   ├── deployment.yaml
-│   │   ├── service.yaml
-│   │   ├── ingress.yaml
-│   │   └── configmap.yaml
-│   │
-│   └── cloud/                              # Cloud deployment configs
-│       ├── aws/                            # AWS-specific configs (optional)
-│       ├── gcp/                            # GCP-specific configs (optional)
-│       └── render.yaml                     # Render.com config
+│   └── └── .dockerignore
 │
 ├── configs/                                # Configuration files
 │   ├── default.yaml                        # Default configuration
@@ -273,12 +262,6 @@ mot-reid-system/
 │   ├── visualize_results.py                # Visualize tracking results
 │   └── setup_environment.sh                # Environment setup script
 │
-├── notebooks/                              # Jupyter notebooks (exploratory)
-│   ├── 01_data_exploration.ipynb           # Dataset statistics and visualization
-│   ├── 02_model_debugging.ipynb            # Debug model outputs
-│   ├── 03_hyperparameter_tuning.ipynb      # Hyperparameter experiments
-│   ├── 04_results_analysis.ipynb           # Analyze evaluation results
-│   └── 05_demo_creation.ipynb              # Create demo visualizations
 │
 ├── docs/                                   # Documentation
 │   ├── TECH_STACK.md                       # Technology stack (COMPLETED)
@@ -387,7 +370,7 @@ mot-reid-system/
 - **Run with:** `pytest tests/`
 
 **`deployment/`**
-- **Purpose:** Deployment configurations (Docker, K8s, cloud)
+- **Purpose:** Deployment configurations (Docker)
 - **Git Tracked:** Yes
 - **Usage:** `docker-compose up` for local deployment
 
@@ -400,11 +383,6 @@ mot-reid-system/
 - **Purpose:** Standalone executable scripts
 - **Git Tracked:** Yes
 - **Usage:** `python scripts/train_detection.py --config configs/detection.yaml`
-
-**`notebooks/`**
-- **Purpose:** Jupyter notebooks for exploration and analysis
-- **Git Tracked:** Yes (but outputs cleared before commit)
-- **Usage:** Experimentation, not production code
 
 **`docs/`**
 - **Purpose:** All documentation (markdown files)
