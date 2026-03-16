@@ -205,7 +205,11 @@ Feature galleries are automatically saved after processing. Users can upload a q
 ---
 
 ## System Architecture
-![Diagram](assets/Architectural-Diagram.svg)
+<p align="center">
+  <a href="assets/Architectural-Diagram.png">
+    <img src="assets/Architectural-Diagram.svg" width="100%">
+  </a>
+</p>
 
 ### Processing Pipeline
 ```
